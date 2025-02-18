@@ -13,13 +13,15 @@ class Command(BaseCommand):
         last_name = config('DJANGO_SUPERUSER_LAST_NAME', default='Daniel')
         email = config('DJANGO_SUPERUSER_EMAIL', default='ibejih@ctrlv.com')
         password = config('DJANGO_SUPERUSER_PASSWORD', default='manifest37')
+        username = config('DJANGO_SUPERUSER_USERNAME', default='Ibejih')  # Add this line
 
-        if not all([first_name, last_name, email, password]):
+        if not all([username, first_name, last_name, email, password]):
             self.stdout.write(self.style.ERROR('Missing one or more required environment variables'))
             return
 
         try:
-            user, created = User.objects.get_or_create(email=email, defaults={
+            user, created = User.objects.get_or_create(username=username, defaults={
+                'email': email,
                 'first_name': first_name,
                 'last_name': last_name,
                 'is_staff': True,

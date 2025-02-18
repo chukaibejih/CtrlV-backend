@@ -1,5 +1,5 @@
 [project]
-name = "codely"
+name = "ctrlv"
 version = "0.1.0"
 description = "Lightweight Code Sharing Platform"
 authors = [
