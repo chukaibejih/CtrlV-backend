@@ -2,20 +2,20 @@
 
 set -o errexit  # Exit immediately if a command exits with a non-zero status
 
-# Install Poetry if not installed
+# Ensure Poetry is available
 if ! command -v poetry &> /dev/null; then
-    curl -sSL https://install.python-poetry.org | python3 -
-    export PATH="$HOME/.local/bin:$PATH"
+    echo "Poetry not found, exiting..."
+    exit 1
 fi
 
-# Install dependencies using Poetry
-poetry install --no-root
+# Use local .venv instead of system-wide location
+poetry config virtualenvs.in-project true
 
-# Collect static files
-# poetry run python manage.py collectstatic --no-input
+# Install dependencies
+poetry install --no-root
 
 # Run migrations
 poetry run python manage.py migrate
 
-# Create superuser from environment variables
+# Create superuser
 poetry run python manage.py create_superuser
