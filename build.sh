@@ -8,14 +8,11 @@ if ! command -v poetry &> /dev/null; then
     exit 1
 fi
 
-# Use local .venv instead of system-wide location
-poetry config virtualenvs.in-project true
-
-# Install dependencies
+# Install dependencies using Poetry
 poetry install --no-root
 
 # Run migrations
 poetry run python manage.py migrate
 
-# Create superuser
+# Create superuser from environment variables
 poetry run python manage.py create_superuser
