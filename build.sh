@@ -2,12 +2,6 @@
 
 set -o errexit  # Exit immediately if a command exits with a non-zero status
 
-# Ensure Poetry is available
-if ! command -v poetry &> /dev/null; then
-    echo "Poetry not found, exiting..."
-    exit 1
-fi
-
 # Install dependencies using Poetry
 poetry install --no-root
 
