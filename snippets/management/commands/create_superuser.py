@@ -36,3 +36,5 @@ class Command(BaseCommand):
 
         except IntegrityError as e:
             self.stdout.write(self.style.ERROR(f'Error creating superuser: {str(e)}'))
+
+
