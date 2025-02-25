@@ -6,7 +6,7 @@ set -o errexit  # Exit immediately if a command exits with a non-zero status
 poetry install --no-root
 
 # Collect static files
-poetry run python manage.py collectstatic --no-input
+# poetry run python manage.py collectstatic --no-input
 
 # Run migrations
 poetry run python manage.py migrate

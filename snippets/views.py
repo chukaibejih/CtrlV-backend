@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import models
 from django.shortcuts import get_object_or_404
-from .models import Snippet, SnippetView
+from .models import Snippet, SnippetMetrics, SnippetView
 from .serializers import SnippetSerializer, SnippetViewSerializer
 
 class SnippetCreateView(APIView):
@@ -15,7 +15,9 @@ class SnippetCreateView(APIView):
         if serializer.is_valid():
             snippet = serializer.save()
             
-            # Return both ID and access token
+            # Update metrics
+            SnippetMetrics.record_snippet_creation()
+
             return Response({
                 'id': snippet.id,
                 'access_token': snippet.access_token,
@@ -25,7 +27,6 @@ class SnippetCreateView(APIView):
 
 class SnippetRetrieveView(APIView):
     def get(self, request, snippet_id):
-        # Get access token from query params
         access_token = request.query_params.get('token')
         
         try:
@@ -39,14 +40,12 @@ class SnippetRetrieveView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Check expiration
         if snippet.is_expired:
             return Response(
                 {'error': 'Snippet has expired'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
-        # Handle one-time viewing
+
         if snippet.one_time_view and snippet.view_count > 0:
             return Response(
                 {'error': 'This snippet has already been viewed'},
@@ -54,8 +53,13 @@ class SnippetRetrieveView(APIView):
             )
         
         snippet.increment_view_count()
+
+        # Update metrics
+        SnippetMetrics.record_snippet_view()
+
         serializer = SnippetSerializer(snippet)
         return Response(serializer.data)
+
 
 class SnippetStatsView(APIView):
     def get(self, request):
@@ -75,4 +79,16 @@ class SnippetStatsView(APIView):
             'total_snippets': total_snippets,
             'active_snippets': active_snippets,
             'language_stats': language_stats
+        })
+    
+
+class MonthlyStatsView(APIView):
+    def get(self, request):
+        start_date = timezone.now().replace(day=1).date()  # First day of current month
+        total_snippets = SnippetMetrics.objects.filter(date__gte=start_date).aggregate(models.Sum('total_snippets'))['total_snippets__sum'] or 0
+        total_views = SnippetMetrics.objects.filter(date__gte=start_date).aggregate(models.Sum('total_views'))['total_views__sum'] or 0
+
+        return Response({
+            'total_snippets_this_month': total_snippets,
+            'total_views_this_month': total_views,
         })

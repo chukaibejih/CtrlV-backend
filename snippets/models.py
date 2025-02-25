@@ -56,3 +56,26 @@ class SnippetView(models.Model):
         indexes = [
             models.Index(fields=['snippet', 'viewed_at']),
         ]
+
+
+class SnippetMetrics(models.Model):
+    date = models.DateField(unique=True)  # Store metrics per day
+    total_snippets = models.PositiveIntegerField(default=0)
+    total_views = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = "snippet_metrics"
+
+    @classmethod
+    def record_snippet_creation(cls):
+        today = timezone.now().date()
+        obj, created = cls.objects.get_or_create(date=today)
+        obj.total_snippets += 1
+        obj.save(update_fields=['total_snippets'])
+
+    @classmethod
+    def record_snippet_view(cls):
+        today = timezone.now().date()
+        obj, created = cls.objects.get_or_create(date=today)
+        obj.total_views += 1
+        obj.save(update_fields=['total_views'])
