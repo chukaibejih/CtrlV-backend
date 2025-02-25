@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.timezone import now
-from .models import Snippet, SnippetView
+from .models import Snippet, SnippetMetrics, SnippetView
 
 @admin.register(Snippet)
 class SnippetAdmin(admin.ModelAdmin):
@@ -33,3 +33,10 @@ class SnippetViewAdmin(admin.ModelAdmin):
     search_fields = ("snippet__access_token", "ip_hash", "user_agent")
     readonly_fields = ("id", "snippet", "viewed_at", "ip_hash", "user_agent")
     ordering = ("-viewed_at",)
+
+
+@admin.register(SnippetMetrics)
+class SnippetMetricsAdmin(admin.ModelAdmin):
+    list_display = ("date", "total_snippets", "total_views")
+    list_filter = ("date",)
+    ordering = ("-date",)

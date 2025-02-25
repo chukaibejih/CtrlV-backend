@@ -92,3 +92,59 @@ class MonthlyStatsView(APIView):
             'total_snippets_this_month': total_snippets,
             'total_views_this_month': total_views,
         })
+
+
+class TimeSeriesStatsView(APIView):
+    def get(self, request):
+        # Get period from query params (daily, weekly, monthly)
+        period = request.query_params.get('period', 'monthly')
+        
+        # Calculate appropriate date ranges
+        now = timezone.now()
+        if period == 'daily':
+            # Last 30 days
+            start_date = (now - timedelta(days=30)).date()
+            date_trunc = 'day'
+            date_format = '%Y-%m-%d'
+        elif period == 'weekly':
+            # Last 12 weeks
+            start_date = (now - timedelta(weeks=12)).date()
+            date_trunc = 'week'
+            date_format = '%Y-%U'
+        else:  # monthly
+            # Last 12 months
+            start_date = (now - timedelta(days=365)).date()
+            date_trunc = 'month'
+            date_format = '%Y-%m'
+        
+        # Use Django's database functions for date manipulation
+        from django.db.models.functions import TruncDay, TruncWeek, TruncMonth, Cast
+        from django.db.models import CharField
+        
+        # Select the appropriate truncation function
+        if date_trunc == 'day':
+            trunc_func = TruncDay('date')
+        elif date_trunc == 'week':
+            trunc_func = TruncWeek('date')
+        else:
+            trunc_func = TruncMonth('date')
+        
+        # Get time series data
+        metrics = (SnippetMetrics.objects
+                  .filter(date__gte=start_date)
+                  .annotate(period=Cast(trunc_func, CharField()))
+                  .values('period')
+                  .annotate(
+                      snippets=models.Sum('total_snippets'),
+                      views=models.Sum('total_views')
+                  )
+                  .order_by('period'))
+        
+        # Calculate engagement ratio (views per snippet)
+        for item in metrics:
+            item['engagement_ratio'] = round(item['views'] / item['snippets'], 2) if item['snippets'] > 0 else 0
+        
+        return Response({
+            'period': period,
+            'data': metrics
+        })
