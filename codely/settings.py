@@ -38,6 +38,9 @@ CORS_ORIGIN_ALLOW_ALL = True
 ENVIRONMENT = config("DJANGO_ENV", "development")
 
 
+ENCRYPTION_KEY = config("ENCRYPTION_KEY")
+
+
 # Application definition
 
 INSTALLED_APPS = [
