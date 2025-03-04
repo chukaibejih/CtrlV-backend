@@ -9,12 +9,11 @@ Think of it as **AirDrop for code** – instant, clean, and zero friction. Paste
 - **Secure Access:** Each snippet is assigned a unique access token.
 - **Expiration & One-Time View:** Set expiration times or make it viewable only once.
 - **Analytics:** Track total snippets, active snippets, and language distribution.
-- **Syntax Highlighting:** Automatically detects the language and formats the code accordingly.
 
 ## Tech Stack
 - **Backend:** Django Rest Framework (DRF)
 - **Database:** PostgreSQL
-- **Deployment:** Render
+- **Deployment:** Render/Digital Ocean
 
 ---
 
