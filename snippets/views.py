@@ -86,7 +86,7 @@ class SnippetRetrieveView(APIView):
                 # Cache the updated snippet
                 # If it's a one-time view, don't cache or set very short timeout
                 if snippet.one_time_view:
-                    cache_timeout = 10  # Very short cache for one-time view
+                    cache_timeout = 1 # Very short cache for one-time view
                 else:
                     cache_timeout = 300  # 5 minutes for regular snippets
                 
