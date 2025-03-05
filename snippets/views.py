@@ -77,7 +77,7 @@ class SnippetRetrieveView(APIView):
                 snippet.refresh_from_db()
                 
                 # Batch update metrics
-                self.record_snippet_view()
+                SnippetMetrics.record_snippet_view()
                 
                 # Serialize the result
                 serializer = SnippetSerializer(snippet)
