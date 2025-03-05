@@ -90,7 +90,19 @@ class SnippetMetrics(models.Model):
 
     @classmethod
     def record_snippet_view(cls):
-        today = timezone.now().date()
-        obj, created = cls.objects.get_or_create(date=today)
-        obj.total_views += 1
-        obj.save(update_fields=['total_views'])
+        cache_key = f'snippet_view_metrics_{timezone.now().date()}'
+        
+        # Increment in cache
+        current_count = cache.get(cache_key, 0) + 1
+        cache.set(cache_key, current_count, 3600)  # Cache for 1 hour
+        
+        # Batch update every 10 views
+        if current_count % 10 == 0:
+            with transaction.atomic():
+                today = timezone.now().date()
+                obj, created = SnippetMetrics.objects.get_or_create(date=today)
+                obj.total_views += current_count
+                obj.save(update_fields=['total_views'])
+                
+                # Reset cache after database update
+                cache.delete(cache_key)

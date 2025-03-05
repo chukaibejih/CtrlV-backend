@@ -8,6 +8,8 @@ from django.db import models
 from django.shortcuts import get_object_or_404
 from .models import Snippet, SnippetMetrics, SnippetView
 from .serializers import SnippetSerializer, SnippetViewSerializer
+from django.core.cache import cache
+from django.db import transaction
 
 class SnippetCreateView(APIView):
     def post(self, request):
@@ -27,38 +29,78 @@ class SnippetCreateView(APIView):
 
 class SnippetRetrieveView(APIView):
     def get(self, request, snippet_id):
-        access_token = request.query_params.get('token')
+        # Create a cache key for this specific snippet
+        cache_key = f'snippet:{snippet_id}'
+        
+        # Try to get from cache first
+        cached_snippet = cache.get(cache_key)
+        if cached_snippet:
+            return Response(cached_snippet)
         
         try:
-            snippet = Snippet.objects.get(
-                id=snippet_id,
-                access_token=access_token
-            )
+            with transaction.atomic():
+                snippet = (
+                    Snippet.objects
+                    .select_related()
+                    .only(
+                        'id', 'content', 'language', 'created_at', 
+                        'expires_at', 'view_count', 'one_time_view',
+                        'access_token'
+                    )
+                    .get(
+                        id=snippet_id,
+                        access_token=request.query_params.get('token')
+                    )
+                )
+                
+                # Validate snippet conditions
+                if snippet.is_expired:
+                    # Invalidate cache for expired snippet
+                    cache.delete(cache_key)
+                    return Response(
+                        {'error': 'Snippet has expired'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                if snippet.one_time_view and snippet.view_count > 0:
+                    # Invalidate cache for one-time viewed snippet
+                    cache.delete(cache_key)
+                    return Response(
+                        {'error': 'This snippet has already been viewed'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                # Increment view count using F() expression
+                Snippet.objects.filter(id=snippet_id).update(view_count=models.F('view_count') + 1)
+                
+                # Refresh the snippet to get the updated view count
+                snippet.refresh_from_db()
+                
+                # Batch update metrics
+                self.record_snippet_view()
+                
+                # Serialize the result
+                serializer = SnippetSerializer(snippet)
+                serialized_data = serializer.data
+                
+                # Cache the updated snippet
+                # If it's a one-time view, don't cache or set very short timeout
+                if snippet.one_time_view:
+                    cache_timeout = 10  # Very short cache for one-time view
+                else:
+                    cache_timeout = 300  # 5 minutes for regular snippets
+                
+                cache.set(cache_key, serialized_data, timeout=cache_timeout)
+                
+                return Response(serialized_data)
+        
         except Snippet.DoesNotExist:
+            # Ensure no stale cache remains
+            cache.delete(cache_key)
             return Response(
                 {'error': 'Invalid snippet or access token'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        if snippet.is_expired:
-            return Response(
-                {'error': 'Snippet has expired'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        if snippet.one_time_view and snippet.view_count > 0:
-            return Response(
-                {'error': 'This snippet has already been viewed'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        snippet.increment_view_count()
-
-        # Update metrics
-        SnippetMetrics.record_snippet_view()
-
-        serializer = SnippetSerializer(snippet)
-        return Response(serializer.data)
 
 
 class SnippetStatsView(APIView):
