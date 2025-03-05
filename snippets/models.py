@@ -5,6 +5,8 @@ from django.db import models
 from django.utils import timezone
 from datetime import timedelta
 import secrets
+from django.db import transaction
+from django.core.cache import cache
 
 class Snippet(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -68,10 +70,23 @@ class SnippetMetrics(models.Model):
 
     @classmethod
     def record_snippet_creation(cls):
-        today = timezone.now().date()
-        obj, created = cls.objects.get_or_create(date=today)
-        obj.total_snippets += 1
-        obj.save(update_fields=['total_snippets'])
+        # Use cache to reduce database hits
+        cache_key = f'snippet_metrics_{timezone.now().date()}'
+        
+        # Increment in cache first
+        current_count = cache.get(cache_key, 0) + 1
+        cache.set(cache_key, current_count, 3600)  # Cache for 1 hour
+        
+        # Batch update to reduce database writes
+        if current_count % 10 == 0:
+            with transaction.atomic():
+                today = timezone.now().date()
+                obj, created = cls.objects.get_or_create(date=today)
+                obj.total_snippets += current_count
+                obj.save(update_fields=['total_snippets'])
+                
+                # Reset cache after database update
+                cache.delete(cache_key)
 
     @classmethod
     def record_snippet_view(cls):
