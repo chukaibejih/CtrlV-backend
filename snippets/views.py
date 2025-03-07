@@ -63,8 +63,6 @@ class SnippetRetrieveView(APIView):
                     )
 
                 if snippet.one_time_view and snippet.view_count > 0:
-                    # Invalidate cache for one-time viewed snippet
-                    cache.delete(cache_key)
                     return Response(
                         {'error': 'This snippet has already been viewed'},
                         status=status.HTTP_404_NOT_FOUND
@@ -84,11 +82,7 @@ class SnippetRetrieveView(APIView):
                 serialized_data = serializer.data
                 
                 # Cache the updated snippet
-                # If it's a one-time view, don't cache or set very short timeout
-                if snippet.one_time_view:
-                    cache_timeout = 1 # Very short cache for one-time view
-                else:
-                    cache_timeout = 300  # 5 minutes for regular snippets
+                cache_timeout = 300  # 5 minutes for regular snippets
                 
                 cache.set(cache_key, serialized_data, timeout=cache_timeout)
                 
