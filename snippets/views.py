@@ -32,13 +32,10 @@ class SnippetRetrieveView(APIView):
         # Create a cache key for this specific snippet
         cache_key = f'snippet:{snippet_id}'
         
-        # Try to get from cache first
-        cached_snippet = cache.get(cache_key)
-        if cached_snippet:
-            return Response(cached_snippet)
-        
         try:
             with transaction.atomic():
+                # For one-time view snippets, we should never use cache
+                # First, try to get the snippet to check if it's one-time view
                 snippet = (
                     Snippet.objects
                     .select_related()
@@ -62,16 +59,34 @@ class SnippetRetrieveView(APIView):
                         status=status.HTTP_404_NOT_FOUND
                     )
 
-                if snippet.one_time_view and snippet.view_count > 0:
-                    return Response(
-                        {'error': 'This snippet has already been viewed'},
-                        status=status.HTTP_404_NOT_FOUND
-                    )
+                # Handle one-time view snippets
+                if snippet.one_time_view:
+                    # If it's already been viewed, return error
+                    if snippet.view_count > 0:
+                        return Response(
+                            {'error': 'This snippet has already been viewed'},
+                            status=status.HTTP_404_NOT_FOUND
+                        )
+                    
+                    # Update the view count immediately
+                    Snippet.objects.filter(id=snippet_id).update(view_count=models.F('view_count') + 1)
+                    snippet.refresh_from_db()
+                    
+                    # Serialize and return directly (no caching)
+                    serializer = SnippetSerializer(snippet)
+                    
+                    # Record the view in metrics
+                    SnippetMetrics.record_snippet_view()
+                    
+                    return Response(serializer.data)
                 
-                # Increment view count using F() expression
+                # For regular snippets, use caching as normal
+                cached_snippet = cache.get(cache_key)
+                if cached_snippet:
+                    return Response(cached_snippet)
+                
+                # Increment view count for regular snippets
                 Snippet.objects.filter(id=snippet_id).update(view_count=models.F('view_count') + 1)
-                
-                # Refresh the snippet to get the updated view count
                 snippet.refresh_from_db()
                 
                 # Batch update metrics
@@ -81,10 +96,8 @@ class SnippetRetrieveView(APIView):
                 serializer = SnippetSerializer(snippet)
                 serialized_data = serializer.data
                 
-                # Cache the updated snippet
-                cache_timeout = 300  # 5 minutes for regular snippets
-                
-                cache.set(cache_key, serialized_data, timeout=cache_timeout)
+                # Cache the updated snippet (for regular snippets only)
+                cache.set(cache_key, serialized_data, timeout=300)  # 5 minutes
                 
                 return Response(serialized_data)
         
