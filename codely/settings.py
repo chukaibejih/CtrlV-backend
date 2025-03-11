@@ -137,6 +137,8 @@ CACHES = {
     }
 }
 
+
+
 # Optional: Session caching
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 SESSION_CACHE_ALIAS = 'default'
@@ -147,12 +149,30 @@ SESSION_CACHE_ALIAS = 'default'
 
 LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = "UTC"
+TIME_ZONE = "Africa/Lagos"
 
 USE_I18N = True
 
 USE_TZ = True
 
+
+# CELERY
+CELERY_BROKER_URL = "redis://localhost:6379/1"
+CELERY_ACCEPT_CONTENT = ["application/json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_RESULT_BACKEND = "django-db"
+CELERY_RESULTS_EXTENDED = True
+
+
+# Celery Beat configuration
+CELERY_BEAT_SCHEDULE = {
+    'flush-snippet-metrics': {
+        'task': 'snippets.tasks.flush_snippet_metrics',
+        'schedule': timedelta(minutes=30),
+    },
+}
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
