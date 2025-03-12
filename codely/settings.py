@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
 
     "snippets", 
+    "django_celery_results"
 
 ]
 
@@ -162,7 +163,7 @@ CELERY_ACCEPT_CONTENT = ["application/json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_RESULT_BACKEND = "django_db"
+CELERY_RESULT_BACKEND = "django-db"
 CELERY_RESULTS_EXTENDED = True
 
 
