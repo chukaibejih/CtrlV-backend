@@ -14,7 +14,12 @@ class SnippetSerializer(serializers.ModelSerializer):
         return value
 
     def validate_language(self, value):
-        allowed_languages = ['javascript', 'python', 'typescript', 'java', 'cpp', 'php', 'rust', 'sql', 'html', 'css', 'markdown', 'json']  # Add more as needed
+        allowed_languages = [
+            'javascript', 'python', 'typescript', 'java', 'cpp', 'php', 'rust', 'sql', 
+            'html', 'css', 'markdown', 'json', 'swift', 'go', 'ruby', 'kotlin', 'scala', 
+            'csharp', 'fsharp', 'dart', 'lua', 'perl', 'r', 'shell', 'powershell', 
+            'yaml', 'toml', 'graphql', 'haskell', 'ocaml', 'elixir'
+        ]
         if value not in allowed_languages:
             raise serializers.ValidationError(f"Language must be one of: {', '.join(allowed_languages)}")
         return value

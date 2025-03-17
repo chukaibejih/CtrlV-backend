@@ -106,3 +106,76 @@ class SnippetMetrics(models.Model):
                 
                 # Reset cache after database update
                 cache.delete(cache_key)
+
+
+class VSCodeExtensionMetrics(models.Model):
+    date = models.DateField(unique=True)
+    total_actions = models.PositiveIntegerField(default=0)
+    selection_shares = models.PositiveIntegerField(default=0)
+    file_shares = models.PositiveIntegerField(default=0)
+    unique_clients = models.PositiveIntegerField(default=0)
+    error_count = models.PositiveIntegerField(default=0)
+    
+    class Meta:
+        db_table = "vscode_extension_metrics"
+        
+    @classmethod
+    def record_action(cls, event_name, client_id, is_error=False):
+        # Use cache to reduce database hits
+        today = timezone.now().date()
+        
+        # Track total actions
+        action_cache_key = f'vscode_actions_{today}'
+        current_count = cache.get(action_cache_key, 0) + 1
+        cache.set(action_cache_key, current_count, 3600)  # Cache for 1 hour
+        
+        # Track specific action type
+        type_cache_key = None
+        if event_name == 'shareSelectedCode':
+            type_cache_key = f'vscode_selections_{today}'
+        elif event_name == 'shareEntireFile':
+            type_cache_key = f'vscode_files_{today}'
+            
+        if type_cache_key:
+            type_count = cache.get(type_cache_key, 0) + 1
+            cache.set(type_cache_key, type_count, 3600)
+        
+        # Track errors
+        if is_error:
+            error_cache_key = f'vscode_errors_{today}'
+            error_count = cache.get(error_cache_key, 0) + 1
+            cache.set(error_cache_key, error_count, 3600)
+        
+        # Track unique clients (using a set in cache)
+        client_set_key = f'vscode_clients_{today}'
+        client_set = cache.get(client_set_key, set())
+        client_set.add(client_id)
+        cache.set(client_set_key, client_set, 3600)
+        
+        # Batch update to database periodically
+        if current_count % 10 == 0:
+            with transaction.atomic():
+                obj, created = cls.objects.get_or_create(date=today)
+                
+                # Update counts
+                obj.total_actions += current_count
+                
+                if type_cache_key == f'vscode_selections_{today}':
+                    obj.selection_shares += cache.get(type_cache_key, 0)
+                    cache.delete(type_cache_key)
+                
+                if type_cache_key == f'vscode_files_{today}':
+                    obj.file_shares += cache.get(type_cache_key, 0)
+                    cache.delete(type_cache_key)
+                
+                if is_error:
+                    obj.error_count += cache.get(error_cache_key, 0)
+                    cache.delete(error_cache_key)
+                
+                # Update unique clients count
+                obj.unique_clients = len(client_set)
+                
+                obj.save()
+                
+                # Reset cache after database update
+                cache.delete(action_cache_key)

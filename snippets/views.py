@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import models
 from django.shortcuts import get_object_or_404
-from .models import Snippet, SnippetMetrics, SnippetView
+from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics
 from .serializers import SnippetSerializer, SnippetViewSerializer
 from django.core.cache import cache
 from django.db import transaction
@@ -197,3 +197,15 @@ class TimeSeriesStatsView(APIView):
             'period': period,
             'data': metrics
         })
+
+class VSCodeMetricsView(APIView):
+    def post(self, request):
+        event_type = request.data.get('event_type')
+        event_name = request.data.get('event_name')
+        client_id = request.data.get('client_id')
+        is_error = event_name == 'shareError'
+        
+        # Record the metric
+        VSCodeExtensionMetrics.record_action(event_name, client_id, is_error)
+            
+        return Response({'status': 'received'}, status=status.HTTP_202_ACCEPTED)

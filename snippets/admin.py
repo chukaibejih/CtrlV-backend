@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.timezone import now
-from .models import Snippet, SnippetMetrics, SnippetView
+from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics
 
 @admin.register(Snippet)
 class SnippetAdmin(admin.ModelAdmin):
@@ -40,3 +40,32 @@ class SnippetMetricsAdmin(admin.ModelAdmin):
     list_display = ("date", "total_snippets", "total_views")
     list_filter = ("date",)
     ordering = ("-date",)
+
+
+@admin.register(VSCodeExtensionMetrics)
+class VSCodeExtensionMetricsAdmin(admin.ModelAdmin):
+    list_display = (
+        'date', 
+        'total_actions', 
+        'selection_shares', 
+        'file_shares', 
+        'unique_clients', 
+        'error_count',
+        'error_rate'
+    )
+    list_filter = ('date',)
+    search_fields = ('date',)
+    date_hierarchy = 'date'
+    readonly_fields = ('error_rate',)
+    
+    def error_rate(self, obj):
+        """Calculate and display error rate as percentage"""
+        if obj.total_actions == 0:
+            return "0%"
+        return f"{(obj.error_count / obj.total_actions) * 100:.2f}%"
+    
+    error_rate.short_description = "Error Rate"
+    
+    # def has_add_permission(self, request):
+    #     # Metrics should typically be added programmatically, not manually
+    #     return False

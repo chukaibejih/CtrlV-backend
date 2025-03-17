@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import MonthlyStatsView, SnippetCreateView, SnippetRetrieveView, SnippetStatsView, TimeSeriesStatsView
+from .views import MonthlyStatsView, SnippetCreateView, SnippetRetrieveView, SnippetStatsView, TimeSeriesStatsView, VSCodeMetricsView
 
 urlpatterns = [
     path('', SnippetCreateView.as_view(), name='snippet-create'),
@@ -7,4 +7,5 @@ urlpatterns = [
     path('stats/', SnippetStatsView.as_view(), name='snippet-stats'),
     path('stats/monthly/', MonthlyStatsView.as_view(), name='monthly-stats'),
     path('stats/timeseries/', TimeSeriesStatsView.as_view(), name='timeseries-stats'),
+    path('metrics/vscode/', VSCodeMetricsView.as_view(), name='vscode-metrics'),
 ]

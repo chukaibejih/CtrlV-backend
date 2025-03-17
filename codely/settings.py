@@ -90,7 +90,6 @@ WSGI_APPLICATION = "codely.wsgi.application"
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
 if ENVIRONMENT == "production":
-    # Production database settings (e.g., Heroku)
     DATABASES = {
         "default": dj_database_url.parse(os.environ.get("DATABASE_URL"), conn_max_age=600),
     }
@@ -170,7 +169,7 @@ CELERY_RESULTS_EXTENDED = True
 # Celery Beat configuration
 CELERY_BEAT_SCHEDULE = {
     'flush-snippet-metrics': {
-        'task': 'snippets.tasks.flush_snippet_metrics',
+        'task': 'snippets.tasks.flush_all_metrics',
         'schedule': timedelta(minutes=30),
     },
 }
