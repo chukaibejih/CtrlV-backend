@@ -13,6 +13,7 @@ from django.db import transaction
 
 class SnippetCreateView(APIView):
     def post(self, request):
+        print("request.data", request.data)
         serializer = SnippetSerializer(data=request.data)
         if serializer.is_valid():
             snippet = serializer.save()
