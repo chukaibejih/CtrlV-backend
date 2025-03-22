@@ -2,7 +2,10 @@ from celery import shared_task
 from django.core.cache import cache
 from django.utils import timezone
 from django.db import transaction
-from .models import SnippetMetrics, VSCodeExtensionMetrics
+from django.db.models import Count
+from django.core.management import call_command
+from datetime import timedelta
+from .models import SnippetMetrics, VSCodeExtensionMetrics, VSCodeTelemetryEvent
 
 @shared_task
 def flush_snippet_metrics():
@@ -72,3 +75,70 @@ def flush_all_metrics():
     """Flush all metrics in one task"""
     flush_snippet_metrics()
     flush_vscode_metrics()
+
+
+@shared_task
+def process_telemetry_data():
+    """
+    Processes and analyzes telemetry data to extract insights.
+    This task can be scheduled to run daily to generate reports.
+    """
+    # Run the analyze_telemetry management command
+    call_command('analyze_telemetry', 
+                 days=1,  # Just process yesterday's data
+                 export=f"telemetry_report_{timezone.now().strftime('%Y%m%d')}.csv")
+    return True
+
+@shared_task
+def cleanup_old_telemetry():
+    """
+    Cleans up old telemetry data to prevent database bloat.
+    Archives data before deletion if configured.
+    """
+    # Configuration
+    retention_days = 90  # Keep 90 days of detailed data
+    archive = True       # Archive data before deletion
+    
+    # Run the cleanup_telemetry management command
+    call_command('cleanup_telemetry', 
+                 days=retention_days,
+                 archive=archive,
+                 batch_size=5000)
+    return True
+
+@shared_task
+def aggregate_client_metrics():
+    """
+    Aggregates client-specific metrics for reporting and analysis.
+    """
+    # Get yesterday's date
+    yesterday = (timezone.now() - timedelta(days=1)).date()
+    
+    # Get telemetry events from yesterday
+    events = VSCodeTelemetryEvent.objects.filter(
+        timestamp__date=yesterday
+    )
+    
+    # Example: Get most active clients
+    client_counts = events.values('client_id').annotate(
+        total=Count('id')
+    ).order_by('-total')[:100]  # Top 100 active clients
+    
+    # Store this data somewhere or create a report
+    # This is a simplified example - you would add your specific metrics here
+    
+    return True
+
+# Update the existing schedule task to include the new tasks
+@shared_task
+def daily_scheduled_tasks():
+    """Run all daily scheduled tasks in sequence"""
+    flush_snippet_metrics()
+    flush_vscode_metrics()
+    process_telemetry_data()
+    
+    # Run cleanup monthly (first day of month)
+    if timezone.now().day == 1:
+        cleanup_old_telemetry()
+    
+    return True

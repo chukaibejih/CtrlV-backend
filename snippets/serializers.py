@@ -18,7 +18,7 @@ class SnippetSerializer(serializers.ModelSerializer):
             'javascript', 'python', 'typescript', 'java', 'cpp', 'php', 'rust', 'sql', 
             'html', 'css', 'markdown', 'json', 'swift', 'go', 'ruby', 'kotlin', 'scala', 
             'csharp', 'fsharp', 'dart', 'lua', 'perl', 'r', 'shell', 'powershell', 
-            'yaml', 'toml', 'graphql', 'haskell', 'ocaml', 'elixir'
+            'yaml', 'toml', 'graphql', 'haskell', 'ocaml', 'elixir', 'text'
         ]
         if value not in allowed_languages:
             raise serializers.ValidationError(f"Language must be one of: {', '.join(allowed_languages)}")

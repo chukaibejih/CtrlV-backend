@@ -179,3 +179,58 @@ class VSCodeExtensionMetrics(models.Model):
                 
                 # Reset cache after database update
                 cache.delete(action_cache_key)
+                
+
+class VSCodeTelemetryEvent(models.Model):
+    """Stores raw telemetry events from VSCode extension for detailed analysis"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event_type = models.CharField(max_length=50)  # e.g., 'vscode_extension'
+    event_name = models.CharField(max_length=50)  # e.g., 'shareSelectedCode', 'shareEntireFile', 'shareError'
+    client_id = models.CharField(max_length=64, db_index=True)  # Anonymous client identifier
+    timestamp = models.DateTimeField()
+    vs_code_version = models.CharField(max_length=30, null=True, blank=True)
+    language = models.CharField(max_length=30, null=True, blank=True)  # Language of code being shared
+    code_length = models.PositiveIntegerField(null=True, blank=True)  # Length of code being shared
+    error_message = models.TextField(null=True, blank=True)  # Error message if applicable
+    request_data = models.JSONField(null=True, blank=True)  # Store the full request JSON
+
+    class Meta:
+        db_table = "vscode_telemetry_events"
+        indexes = [
+            models.Index(fields=['event_name', 'timestamp']),
+            models.Index(fields=['timestamp']),
+        ]
+    
+    @classmethod
+    def create_from_request(cls, request_data):
+        """Create a telemetry event record from the incoming request data"""
+        try:
+            timestamp = timezone.now()
+            if 'timestamp' in request_data:
+                try:
+                    # Parse ISO timestamp from client
+                    timestamp = timezone.datetime.fromisoformat(
+                        request_data['timestamp'].replace('Z', '+00:00')
+                    )
+                except (ValueError, TypeError):
+                    # If parsing fails, use current time
+                    pass
+                
+            # Extract common fields
+            event = cls(
+                event_type=request_data.get('event_type', 'unknown'),
+                event_name=request_data.get('event_name', 'unknown'),
+                client_id=request_data.get('client_id', 'anonymous'),
+                timestamp=timestamp,
+                vs_code_version=request_data.get('vs_code_version'),
+                language=request_data.get('language'),
+                code_length=request_data.get('codeLength'),
+                error_message=request_data.get('error'),
+                request_data=request_data  # Store the full request data
+            )
+            event.save()
+            return event
+        except Exception as e:
+            # Log error but don't fail - telemetry should be non-blocking
+            print(f"Error saving telemetry event: {e}")
+            return None

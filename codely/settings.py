@@ -16,6 +16,7 @@ from pathlib import Path
 
 import dj_database_url
 from decouple import Csv, config
+from celery.schedules import crontab
 from django.core.management.utils import get_random_secret_key
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -168,9 +169,13 @@ CELERY_RESULTS_EXTENDED = True
 
 # Celery Beat configuration
 CELERY_BEAT_SCHEDULE = {
-    'flush-snippet-metrics': {
+    'flush-metrics': {
         'task': 'snippets.tasks.flush_all_metrics',
         'schedule': timedelta(minutes=30),
+    },
+    'daily-processing': {
+        'task': 'snippets.tasks.daily_scheduled_tasks',
+        'schedule': crontab(hour=1, minute=0),  # Run at 1:00 AM
     },
 }
 

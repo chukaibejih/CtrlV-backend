@@ -6,16 +6,21 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import models
 from django.shortcuts import get_object_or_404
-from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics
+from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics, VSCodeTelemetryEvent
 from .serializers import SnippetSerializer, SnippetViewSerializer
 from django.core.cache import cache
 from django.db import transaction
 
 class SnippetCreateView(APIView):
     def post(self, request):
-        print("request.data", request.data)
+        # Debugging
+        print("=== Incoming Snippet Request ===")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Data: {request.data}")
+        
         serializer = SnippetSerializer(data=request.data)
-        if serializer.is_valid():
+        if not serializer.is_valid():
+            print(f"Validation errors: {serializer.errors}")
             snippet = serializer.save()
             
             # Update metrics
@@ -201,12 +206,31 @@ class TimeSeriesStatsView(APIView):
 
 class VSCodeMetricsView(APIView):
     def post(self, request):
+        print("=== Incoming VSCode Metrics Request ===")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Data: {request.data}")
+        
         event_type = request.data.get('event_type')
         event_name = request.data.get('event_name')
         client_id = request.data.get('client_id')
         is_error = event_name == 'shareError'
         
-        # Record the metric
-        VSCodeExtensionMetrics.record_action(event_name, client_id, is_error)
+        try:
+            # Store the detailed telemetry event asynchronously
+            transaction.on_commit(lambda: self._store_telemetry_event(request.data))
+            
+            # Record the aggregated metric as before
+            VSCodeExtensionMetrics.record_action(event_name, client_id, is_error)
+        except Exception as e:
+            # Log the error but still return success (telemetry should be non-blocking)
+            print(f"Error processing metrics: {e}")
             
         return Response({'status': 'received'}, status=status.HTTP_202_ACCEPTED)
+    
+    def _store_telemetry_event(self, data):
+        """Store the detailed telemetry event (called after transaction commit)"""
+        try:
+            VSCodeTelemetryEvent.create_from_request(data)
+        except Exception as e:
+            # Log the error but don't propagate (telemetry errors shouldn't interrupt the user)
+            print(f"Failed to store detailed telemetry: {e}")

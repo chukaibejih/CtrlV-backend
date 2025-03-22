@@ -1,6 +1,8 @@
 from django.contrib import admin
+from django.urls import reverse
+from django.utils.safestring import mark_safe
 from django.utils.timezone import now
-from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics
+from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics, VSCodeTelemetryEvent
 
 @admin.register(Snippet)
 class SnippetAdmin(admin.ModelAdmin):
@@ -35,37 +37,74 @@ class SnippetViewAdmin(admin.ModelAdmin):
     ordering = ("-viewed_at",)
 
 
-@admin.register(SnippetMetrics)
-class SnippetMetricsAdmin(admin.ModelAdmin):
-    list_display = ("date", "total_snippets", "total_views")
-    list_filter = ("date",)
-    ordering = ("-date",)
+@admin.register(VSCodeTelemetryEvent)
+class VSCodeTelemetryEventAdmin(admin.ModelAdmin):
+    list_display = ('event_name', 'client_id', 'timestamp', 'language', 'code_length', 'vs_code_version', 'has_error')
+    list_filter = ('event_name', 'vs_code_version', 'timestamp', 'language')
+    search_fields = ('client_id', 'error_message')
+    date_hierarchy = 'timestamp'
+    readonly_fields = ('id', 'event_type', 'event_name', 'client_id', 'timestamp', 
+                      'vs_code_version', 'language', 'code_length', 'error_message', 
+                      'request_data_pretty')
+    
+    def has_error(self, obj):
+        return bool(obj.error_message)
+    has_error.boolean = True
+    has_error.short_description = 'Error'
+    
+    def request_data_pretty(self, obj):
+        """Pretty print JSON data"""
+        if not obj.request_data:
+            return None
+            
+        try:
+            import json
+            formatted_json = json.dumps(obj.request_data, indent=2)
+            return mark_safe(f'<pre>{formatted_json}</pre>')
+        except Exception:
+            return str(obj.request_data)
+    request_data_pretty.short_description = 'Request Data'
+    
 
 
 @admin.register(VSCodeExtensionMetrics)
 class VSCodeExtensionMetricsAdmin(admin.ModelAdmin):
-    list_display = (
-        'date', 
-        'total_actions', 
-        'selection_shares', 
-        'file_shares', 
-        'unique_clients', 
-        'error_count',
-        'error_rate'
-    )
+    list_display = ('date', 'total_actions', 'selection_shares', 'file_shares', 
+                   'unique_clients', 'error_count', 'error_rate')
     list_filter = ('date',)
-    search_fields = ('date',)
     date_hierarchy = 'date'
-    readonly_fields = ('error_rate',)
+    readonly_fields = ('date', 'total_actions', 'selection_shares', 'file_shares',
+                      'unique_clients', 'error_count', 'error_rate', 'detail_link')
     
     def error_rate(self, obj):
-        """Calculate and display error rate as percentage"""
-        if obj.total_actions == 0:
+        """Calculate error rate as percentage"""
+        if not obj.total_actions:
             return "0%"
-        return f"{(obj.error_count / obj.total_actions) * 100:.2f}%"
+        rate = (obj.error_count / obj.total_actions) * 100
+        return f"{rate:.2f}%"
+    error_rate.short_description = 'Error Rate'
     
-    error_rate.short_description = "Error Rate"
+    def detail_link(self, obj):
+        """Link to filtered telemetry events for this date"""
+        if not obj:
+            return ""
+            
+        url = reverse('admin:snippets_vscodetelemetryevent_changelist')
+        link = f'<a href="{url}?timestamp__date={obj.date}">View detailed events</a>'
+        return mark_safe(link)
+    detail_link.short_description = 'Details'
+
+
+
+# Update the existing SnippetMetrics Admin
+@admin.register(SnippetMetrics)
+class SnippetMetricsAdmin(admin.ModelAdmin):
+    list_display = ('date', 'total_snippets', 'total_views', 'views_per_snippet')
+    list_filter = ('date',)
+    date_hierarchy = 'date'
     
-    # def has_add_permission(self, request):
-    #     # Metrics should typically be added programmatically, not manually
-    #     return False
+    def views_per_snippet(self, obj):
+        if not obj.total_snippets:
+            return 0
+        return f"{obj.total_views / obj.total_snippets:.2f}"
+    views_per_snippet.short_description = 'Views Per Snippet'
