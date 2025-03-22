@@ -13,25 +13,23 @@ from django.db import transaction
 
 class SnippetCreateView(APIView):
     def post(self, request):
-        # Debugging
-        print("=== Incoming Snippet Request ===")
-        print(f"Content-Type: {request.content_type}")
-        print(f"Data: {request.data}")
-        
         serializer = SnippetSerializer(data=request.data)
+        
         if not serializer.is_valid():
-            print(f"Validation errors: {serializer.errors}")
-            snippet = serializer.save()
-            
-            # Update metrics
-            SnippetMetrics.record_snippet_creation()
+            print(f"Validation errors: {serializer.errors}") 
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            return Response({
-                'id': snippet.id,
-                'access_token': snippet.access_token,
-                'sharing_url': snippet.get_sharing_url(request.build_absolute_uri('/')[:-1])
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        snippet = serializer.save()
+        
+        # Update metrics
+        SnippetMetrics.record_snippet_creation()
+
+        return Response({
+            'id': snippet.id,
+            'access_token': snippet.access_token,
+            'sharing_url': snippet.get_sharing_url(request.build_absolute_uri('/')[:-1])
+        }, status=status.HTTP_201_CREATED)
+
 
 class SnippetRetrieveView(APIView):
     def get(self, request, snippet_id):
