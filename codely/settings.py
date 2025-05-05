@@ -167,6 +167,8 @@ CELERY_RESULT_BACKEND = "django-db"
 CELERY_RESULTS_EXTENDED = True
 
 
+ENCRYPTION_KEY = config("ENCRYPTION_KEY", cast=str)
+
 # Celery Beat configuration
 CELERY_BEAT_SCHEDULE = {
     'flush-metrics': {
