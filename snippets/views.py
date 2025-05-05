@@ -1,28 +1,30 @@
 from datetime import timedelta
 import hashlib
+import difflib
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.db import models
+from django.db import models, transaction
 from django.shortcuts import get_object_or_404
-from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics, VSCodeTelemetryEvent
-from .serializers import SnippetSerializer, SnippetViewSerializer
-from django.core.cache import cache
-from django.db import transaction
+from .models import Snippet, SnippetMetrics, SnippetView, SnippetDiff, VSCodeExtensionMetrics, VSCodeTelemetryEvent
+from .serializers import (
+    SnippetSerializer, SnippetViewSerializer, SnippetDiffSerializer,
+    SnippetPasswordCheckSerializer, SnippetVersionSerializer
+)
 
 class SnippetCreateView(APIView):
     def post(self, request):
-        serializer = SnippetSerializer(data=request.data)
+        serializer = SnippetSerializer(data=request.data, context={'request': request})
         
         if not serializer.is_valid():
-            print(f"Validation errors: {serializer.errors}") 
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         snippet = serializer.save()
         
         # Update metrics
         SnippetMetrics.record_snippet_creation()
+        print(snippet.get_sharing_url(request.build_absolute_uri('/')[:-1]))
 
         return Response({
             'id': snippet.id,
@@ -34,84 +36,166 @@ class SnippetCreateView(APIView):
 class SnippetRetrieveView(APIView):
     def get(self, request, snippet_id):
         # Create a cache key for this specific snippet
-        cache_key = f'snippet:{snippet_id}'
+        access_token = request.query_params.get('token')
+        verified = request.query_params.get('verified')
         
         try:
-            with transaction.atomic():
-                # For one-time view snippets, we should never use cache
-                # First, try to get the snippet to check if it's one-time view
-                snippet = (
-                    Snippet.objects
-                    .select_related()
-                    .only(
-                        'id', 'content', 'language', 'created_at', 
-                        'expires_at', 'view_count', 'one_time_view',
-                        'access_token'
-                    )
-                    .get(
-                        id=snippet_id,
-                        access_token=request.query_params.get('token')
-                    )
-                )
-                
-                # Validate snippet conditions
-                if snippet.is_expired:
-                    # Invalidate cache for expired snippet
-                    cache.delete(cache_key)
-                    return Response(
-                        {'error': 'Snippet has expired'},
-                        status=status.HTTP_404_NOT_FOUND
-                    )
-
-                # Handle one-time view snippets
-                if snippet.one_time_view:
-                    # If it's already been viewed, return error
-                    if snippet.view_count > 0:
-                        return Response(
-                            {'error': 'This snippet has already been viewed'},
-                            status=status.HTTP_404_NOT_FOUND
-                        )
-                    
-                    # Update the view count immediately
-                    Snippet.objects.filter(id=snippet_id).update(view_count=models.F('view_count') + 1)
-                    snippet.refresh_from_db()
-                    
-                    # Serialize and return directly (no caching)
-                    serializer = SnippetSerializer(snippet)
-                    
-                    # Record the view in metrics
-                    SnippetMetrics.record_snippet_view()
-                    
-                    return Response(serializer.data)
-                
-                # For regular snippets, use caching as normal
-                cached_snippet = cache.get(cache_key)
-                if cached_snippet:
-                    return Response(cached_snippet)
-                
-                # Increment view count for regular snippets
-                Snippet.objects.filter(id=snippet_id).update(view_count=models.F('view_count') + 1)
-                snippet.refresh_from_db()
-                
-                # Batch update metrics
-                SnippetMetrics.record_snippet_view()
-                
-                # Serialize the result
-                serializer = SnippetSerializer(snippet)
-                serialized_data = serializer.data
-                
-                # Cache the updated snippet (for regular snippets only)
-                cache.set(cache_key, serialized_data, timeout=300)  # 5 minutes
-                
-                return Response(serialized_data)
-        
+            snippet = Snippet.objects.get(
+                id=snippet_id,
+                access_token=access_token
+            )
         except Snippet.DoesNotExist:
-            # Ensure no stale cache remains
-            cache.delete(cache_key)
             return Response(
                 {'error': 'Invalid snippet or access token'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        # Validate snippet conditions
+        if snippet.is_expired:
+            return Response(
+                {'error': 'Snippet has expired'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Handle one-time view snippets
+        if snippet.one_time_view and snippet.view_count > 0:
+            return Response(
+                {'error': 'This snippet has already been viewed'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # If the snippet is password-protected, verify password first
+        # Only require verification if verified=True is not in query params
+        if snippet.password_hash and not verified:
+            return Response(
+                {'requires_password': True},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Record the view
+        ip_address = request.META.get('REMOTE_ADDR', '')
+        ip_hash = hashlib.sha256(ip_address.encode()).hexdigest()
+        user_agent = request.META.get('HTTP_USER_AGENT', '')[:255]
+        
+        # You could add IP geolocation here (using a service like MaxMind GeoIP)
+        # location = get_location_from_ip(ip_address)
+        location = None
+        
+        SnippetView.objects.create(
+            snippet=snippet,
+            ip_hash=ip_hash,
+            user_agent=user_agent,
+            location=location
+        )
+        
+        # Increment view count
+        snippet.increment_view_count()
+
+        # Update metrics
+        SnippetMetrics.record_snippet_view()
+        
+        # If the snippet is encrypted and verified, automatically decrypt it
+        if snippet.is_encrypted and verified:
+            snippet.decrypt_content()
+        
+        # Check if this snippet has versions and fetch them
+        versions = None
+        if snippet.parent_snippet or Snippet.objects.filter(parent_snippet=snippet).exists():
+            versions_queryset = snippet.get_all_versions()
+            versions = SnippetVersionSerializer(versions_queryset, many=True).data
+
+        serializer = SnippetSerializer(snippet)
+        response_data = serializer.data
+        
+        # Add versions information if available
+        if versions:
+            response_data['versions'] = versions
+            
+        return Response(response_data)
+
+    # To handle password verification
+    def post(self, request, snippet_id):
+        action = request.data.get('action')
+        
+        if action == 'check_password':
+            serializer = SnippetPasswordCheckSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                
+            password = serializer.validated_data['password']
+            
+            try:
+                snippet = Snippet.objects.get(id=snippet_id)
+            except Snippet.DoesNotExist:
+                return Response(
+                    {'error': 'Invalid snippet'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+            if snippet.check_password(password):
+                # If the snippet is encrypted, decrypt it right now with the password
+                if snippet.is_encrypted:
+                    success = snippet.decrypt_content()
+                    if not success:
+                        return Response(
+                            {'error': 'Error decrypting content'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                        )
+                
+                # Return decrypted content if it was encrypted
+                if snippet.is_encrypted:
+                    serializer = SnippetSerializer(snippet)
+                    return Response({
+                        'verified': True,
+                        'decrypted': True,
+                        **serializer.data
+                    })
+                else:
+                    # Just return verification status if not encrypted
+                    return Response({'verified': True})
+            else:
+                return Response(
+                    {'error': 'Invalid password'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+                
+        elif action == 'decrypt':
+            # This action is now deprecated since we'll decrypt automatically
+            # in the check_password action, but kept for backward compatibility
+            serializer = SnippetPasswordCheckSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                
+            password = serializer.validated_data['password']
+            
+            try:
+                snippet = Snippet.objects.get(id=snippet_id)
+            except Snippet.DoesNotExist:
+                return Response(
+                    {'error': 'Invalid snippet'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+            if snippet.is_encrypted:
+                success = snippet.decrypt_content()
+                if success:
+                    serializer = SnippetSerializer(snippet)
+                    return Response(serializer.data)
+                else:
+                    return Response(
+                        {'error': 'Invalid password for decryption'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            else:
+                return Response(
+                    {'error': 'Snippet is not encrypted'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        return Response(
+            {'error': 'Invalid action'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
 
 class SnippetStatsView(APIView):
@@ -201,6 +285,116 @@ class TimeSeriesStatsView(APIView):
             'period': period,
             'data': metrics
         })
+
+
+class SnippetVersionView(APIView):
+    def post(self, request, snippet_id):
+        """Create a new version of a snippet"""
+        try:
+            original_snippet = Snippet.objects.get(id=snippet_id)
+        except Snippet.DoesNotExist:
+            return Response(
+                {'error': 'Original snippet not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+        # Update request data to include parent ID
+        request_data = request.data.copy()
+        request_data['parent_id'] = str(original_snippet.id)
+        
+        serializer = SnippetSerializer(data=request_data, context={'request': request})
+        if serializer.is_valid():
+            new_snippet = serializer.save()
+            
+            # Generate diff
+            source_lines = original_snippet.content.splitlines()
+            target_lines = new_snippet.content.splitlines()
+            diff = difflib.unified_diff(
+                source_lines,
+                target_lines,
+                fromfile=f'v{original_snippet.version}',
+                tofile=f'v{new_snippet.version}',
+                lineterm=''
+            )
+            diff_text = '\n'.join(diff)
+            
+            # Store the diff
+            SnippetDiff.objects.create(
+                source_snippet=original_snippet,
+                target_snippet=new_snippet,
+                diff_content=diff_text
+            )
+            
+            # Update metrics
+            SnippetMetrics.record_snippet_creation()
+            
+            return Response({
+                'id': new_snippet.id,
+                'access_token': new_snippet.access_token,
+                'sharing_url': new_snippet.get_sharing_url(request.build_absolute_uri('/')[:-1]),
+                'version': new_snippet.version,
+                'diff': diff_text
+            }, status=status.HTTP_201_CREATED)
+            
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def get(self, request, snippet_id):
+        """Get all versions of a snippet"""
+        try:
+            snippet = Snippet.objects.get(id=snippet_id)
+        except Snippet.DoesNotExist:
+            return Response(
+                {'error': 'Snippet not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+        versions = snippet.get_all_versions()
+        serializer = SnippetVersionSerializer(versions, many=True)
+        
+        return Response(serializer.data)
+
+
+class SnippetDiffView(APIView):
+    def get(self, request, source_id, target_id):
+        """Get diff between two snippet versions"""
+        try:
+            source = Snippet.objects.get(id=source_id)
+            target = Snippet.objects.get(id=target_id)
+        except Snippet.DoesNotExist:
+            return Response(
+                {'error': 'One or both snippets not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+        # Check if diff already exists
+        try:
+            diff = SnippetDiff.objects.get(
+                source_snippet=source,
+                target_snippet=target
+            )
+        except SnippetDiff.DoesNotExist:
+            # Generate new diff
+            source_lines = source.content.splitlines()
+            target_lines = target.content.splitlines()
+            diff_generator = difflib.unified_diff(
+                source_lines,
+                target_lines,
+                fromfile=f'v{source.version}',
+                tofile=f'v{target.version}',
+                lineterm=''
+            )
+            diff_text = '\n'.join(diff_generator)
+            
+            # Store the diff
+            diff = SnippetDiff.objects.create(
+                source_snippet=source,
+                target_snippet=target,
+                diff_content=diff_text
+            )
+        
+        serializer = SnippetDiffSerializer(diff)
+        return Response(serializer.data)
+
 
 class VSCodeMetricsView(APIView):
     def post(self, request):

@@ -2,39 +2,191 @@ from django.contrib import admin
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.utils.timezone import now
-from .models import Snippet, SnippetMetrics, SnippetView, VSCodeExtensionMetrics, VSCodeTelemetryEvent
+from .models import Snippet, SnippetMetrics, SnippetView, SnippetDiff, VSCodeExtensionMetrics, VSCodeTelemetryEvent
+
+class SnippetViewInline(admin.TabularInline):
+    model = SnippetView
+    extra = 0
+    readonly_fields = ('id', 'viewed_at', 'ip_hash', 'user_agent', 'location')
+    can_delete = False
+    
+    def has_add_permission(self, request, obj=None):
+        return False
+
+class VersionInline(admin.TabularInline):
+    model = Snippet
+    fk_name = 'parent_snippet'
+    extra = 0
+    readonly_fields = ('id', 'version', 'content_preview', 'language', 'created_at', 'view_count', 'version_link')
+    fields = ('version', 'version_link', 'language', 'created_at', 'view_count', 'content_preview')
+    can_delete = False
+    
+    def has_add_permission(self, request, obj=None):
+        return False
+        
+    def version_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.id])
+        return mark_safe('<a href="{}">View Version</a>'.format(url))
+    version_link.short_description = 'View'
+    
+    def content_preview(self, obj):
+        if obj.is_encrypted:
+            return "[Encrypted Content]"
+        preview = obj.content[:200] + "..." if len(obj.content) > 200 else obj.content
+        return mark_safe('<pre>{}</pre>'.format(preview))
+    content_preview.short_description = 'Content Preview'
+
+class SnippetDiffInline(admin.TabularInline):
+    model = SnippetDiff
+    fk_name = 'source_snippet'
+    extra = 0
+    readonly_fields = ('id', 'target_snippet', 'created_at', 'diff_preview', 'target_link')
+    fields = ('target_snippet', 'created_at', 'diff_preview', 'target_link')
+    can_delete = False
+    
+    def has_add_permission(self, request, obj=None):
+        return False
+        
+    def diff_preview(self, obj):
+        if obj.diff_content:
+            preview = obj.diff_content[:100] + "..." if len(obj.diff_content) > 100 else obj.diff_content
+            return mark_safe('<pre>{}</pre>'.format(preview))
+        return "-"
+    diff_preview.short_description = 'Diff Preview'
+    
+    def target_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.target_snippet.id])
+        return mark_safe('<a href="{}">View Target</a>'.format(url))
+    target_link.short_description = 'Target'
 
 @admin.register(Snippet)
 class SnippetAdmin(admin.ModelAdmin):
-    list_display = ("id", "language", "created_at", "expires_at", "view_count", "is_encrypted", "one_time_view", "is_expired")
-    list_filter = ("language", "is_encrypted", "one_time_view", "expires_at")
-    search_fields = ("content", "access_token")
-    readonly_fields = ("id", "created_at", "view_count", "access_token", "is_expired")
-    ordering = ("-created_at",)
-    actions = ["reset_view_count", "expire_snippets_now"]
-
-    def is_expired(self, obj):
-        return obj.is_expired
-    is_expired.boolean = True
-    is_expired.short_description = "Expired?"
-
-    @admin.action(description="Reset view count for selected snippets")
-    def reset_view_count(self, request, queryset):
-        queryset.update(view_count=0)
-        self.message_user(request, "View counts have been reset.")
-
-    @admin.action(description="Expire selected snippets immediately")
-    def expire_snippets_now(self, request, queryset):
-        queryset.update(expires_at=now())
-        self.message_user(request, "Selected snippets have been marked as expired.")
+    list_display = ('id', 'language', 'created_at', 'expires_at', 'view_count', 
+                    'is_encrypted', 'one_time_view', 'has_password', 'version', 'parent_link')
+    list_filter = ('language', 'is_encrypted', 'one_time_view', 'created_at', 'version')
+    search_fields = ('id', 'content', 'language', 'creator_ip_hash')
+    readonly_fields = ('id', 'access_token', 'created_at', 'view_count', 'parent_snippet', 'version', 
+                      'content_preview', 'expires_in', 'sharing_url', 'creator_ip_hash', 'creator_location')
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('id', 'language', 'content_preview', 'created_at')
+        }),
+        ('Content', {
+            'fields': ('content',),
+            'classes': ('collapse',),
+        }),
+        ('Security & Access', {
+            'fields': ('access_token', 'is_encrypted', 'one_time_view', 'password_hash', 'password_salt')
+        }),
+        ('Expiration', {
+            'fields': ('expires_at', 'expires_in')
+        }),
+        ('Analytics', {
+            'fields': ('view_count', 'sharing_url', 'creator_ip_hash', 'creator_location')
+        }),
+        ('Versioning', {
+            'fields': ('parent_snippet', 'version')
+        }),
+    )
+    inlines = [VersionInline, SnippetDiffInline, SnippetViewInline]
+    
+    def has_password(self, obj):
+        return bool(obj.password_hash and obj.password_salt)
+    has_password.boolean = True
+    has_password.short_description = 'Password Protected'
+    
+    def content_preview(self, obj):
+        if obj.is_encrypted:
+            return "[Encrypted Content]"
+        preview = obj.content[:200] + "..." if len(obj.content) > 200 else obj.content
+        return mark_safe('<pre>{}</pre>'.format(preview))
+    content_preview.short_description = 'Content Preview'
+    
+    def expires_in(self, obj):
+        if obj.expires_at <= now():
+            return "Expired"
+        delta = obj.expires_at - now()
+        days = delta.days
+        hours, remainder = divmod(delta.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        if days > 0:
+            return f"{days} days, {hours} hours"
+        elif hours > 0:
+            return f"{hours} hours, {minutes} minutes"
+        else:
+            return f"{minutes} minutes, {seconds} seconds"
+    expires_in.short_description = 'Expires In'
+    
+    def sharing_url(self, obj):
+        base_url = "https://ctrlv.codes"  # Replace with your actual base URL
+        url = obj.get_sharing_url(base_url)
+        return mark_safe('<a href="{0}" target="_blank">{0}</a>'.format(url))
+    sharing_url.short_description = 'Sharing URL'
+    
+    def parent_link(self, obj):
+        if obj.parent_snippet:
+            url = reverse('admin:snippets_snippet_change', args=[obj.parent_snippet.id])
+            return mark_safe('<a href="{}">View Parent</a>'.format(url))
+        return "-"
+    parent_link.short_description = 'Parent'
+    
+    def save_model(self, request, obj, form, change):
+        # Handle password protection
+        if 'password' in form.data and form.data['password']:
+            obj.set_password(form.data['password'])
+        super().save_model(request, obj, form, change)
 
 @admin.register(SnippetView)
 class SnippetViewAdmin(admin.ModelAdmin):
-    list_display = ("id", "snippet", "viewed_at", "ip_hash", "user_agent")
-    list_filter = ("viewed_at",)
-    search_fields = ("snippet__access_token", "ip_hash", "user_agent")
-    readonly_fields = ("id", "snippet", "viewed_at", "ip_hash", "user_agent")
-    ordering = ("-viewed_at",)
+    list_display = ('id', 'snippet_link', 'viewed_at', 'ip_hash', 'user_agent', 'location')
+    list_filter = ('viewed_at',)
+    search_fields = ('ip_hash', 'user_agent', 'location')
+    readonly_fields = ('id', 'snippet', 'viewed_at', 'ip_hash', 'user_agent', 'location')
+    
+    def has_add_permission(self, request):
+        return False
+    
+    def snippet_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.snippet.id])
+        return mark_safe('<a href="{}">{}</a>'.format(url, obj.snippet.id))
+    snippet_link.short_description = 'Snippet'
+
+@admin.register(SnippetMetrics)
+class SnippetMetricsAdmin(admin.ModelAdmin):
+    list_display = ('date', 'total_snippets', 'total_views', 'views_per_snippet')
+    list_filter = ('date',)
+    readonly_fields = ('date', 'total_snippets', 'total_views')
+    
+    def has_add_permission(self, request):
+        return False
+    
+    def views_per_snippet(self, obj):
+        if obj.total_snippets > 0:
+            return round(obj.total_views / obj.total_snippets, 2)
+        return 0
+    views_per_snippet.short_description = 'Views Per Snippet'
+
+@admin.register(SnippetDiff)
+class SnippetDiffAdmin(admin.ModelAdmin):
+    list_display = ('id', 'source_snippet_link', 'target_snippet_link', 'created_at')
+    list_filter = ('created_at',)
+    readonly_fields = ('id', 'source_snippet', 'target_snippet', 'diff_content', 'created_at')
+    fields = ('source_snippet', 'target_snippet', 'diff_content', 'created_at')
+    
+    def has_add_permission(self, request):
+        return False
+    
+    def source_snippet_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.source_snippet.id])
+        return mark_safe('<a href="{}">{}</a>'.format(url, obj.source_snippet.id))
+    source_snippet_link.short_description = 'Source Snippet'
+    
+    def target_snippet_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.target_snippet.id])
+        return mark_safe('<a href="{}">{}</a>'.format(url, obj.target_snippet.id))
+    target_snippet_link.short_description = 'Target Snippet'
+
 
 
 @admin.register(VSCodeTelemetryEvent)
@@ -93,18 +245,3 @@ class VSCodeExtensionMetricsAdmin(admin.ModelAdmin):
         link = f'<a href="{url}?timestamp__date={obj.date}">View detailed events</a>'
         return mark_safe(link)
     detail_link.short_description = 'Details'
-
-
-
-# Update the existing SnippetMetrics Admin
-@admin.register(SnippetMetrics)
-class SnippetMetricsAdmin(admin.ModelAdmin):
-    list_display = ('date', 'total_snippets', 'total_views', 'views_per_snippet')
-    list_filter = ('date',)
-    date_hierarchy = 'date'
-    
-    def views_per_snippet(self, obj):
-        if not obj.total_snippets:
-            return 0
-        return f"{obj.total_views / obj.total_snippets:.2f}"
-    views_per_snippet.short_description = 'Views Per Snippet'

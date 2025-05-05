@@ -1,12 +1,15 @@
-
 # models.py
 import uuid
 from django.db import models
 from django.utils import timezone
 from datetime import timedelta
 import secrets
+import hashlib
 from django.db import transaction
 from django.core.cache import cache
+from cryptography.fernet import Fernet
+from django.conf import settings
+import base64
 
 class Snippet(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -18,6 +21,15 @@ class Snippet(models.Model):
     access_token = models.CharField(max_length=100, unique=True)
     is_encrypted = models.BooleanField(default=False)
     one_time_view = models.BooleanField(default=False)
+    # Password protection fields
+    password_hash = models.CharField(max_length=128, null=True, blank=True)
+    password_salt = models.CharField(max_length=128, null=True, blank=True)
+    # Versioning fields
+    parent_snippet = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='versions')
+    version = models.PositiveIntegerField(default=1)
+    # IP tracking
+    creator_ip_hash = models.CharField(max_length=128, null=True, blank=True)
+    creator_location = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = 'snippets'
@@ -35,6 +47,72 @@ class Snippet(models.Model):
             self.access_token = secrets.token_urlsafe(32)
         super().save(*args, **kwargs)
 
+    def set_password(self, password):
+        """Hash password and store it"""
+        if password:
+            # Generate a random salt
+            salt = secrets.token_hex(16)
+            # Create a hash of the password with the salt
+            password_hash = hashlib.pbkdf2_hmac(
+                'sha256', 
+                password.encode('utf-8'), 
+                salt.encode('utf-8'), 
+                100000  # Number of iterations
+            ).hex()
+            
+            self.password_salt = salt
+            self.password_hash = password_hash
+            return True
+        return False
+
+    def check_password(self, password):
+        """Verify a password against the stored hash"""
+        if not self.password_hash or not self.password_salt:
+            return True  # No password set
+        
+        # Convert memoryview to bytes if needed
+        salt = self.password_salt
+        if isinstance(salt, memoryview):
+            salt = bytes(salt)
+        elif isinstance(salt, str):
+            salt = salt.encode('utf-8')
+        
+        hash_to_check = hashlib.pbkdf2_hmac(
+            'sha256', 
+            password.encode('utf-8'), 
+            salt,  # Now using the properly formatted salt
+            100000
+        ).hex()
+        
+        return hash_to_check == self.password_hash
+
+    def encrypt_content(self):
+        """Encrypt the snippet content"""
+        if not self.is_encrypted:
+            key = settings.ENCRYPTION_KEY.encode()
+                
+            cipher = Fernet(key)
+            encrypted_content = cipher.encrypt(self.content.encode('utf-8'))
+            self.content = encrypted_content.decode('utf-8')
+            self.is_encrypted = True
+            return True
+        return False
+
+    def decrypt_content(self):
+        """Decrypt the snippet content"""
+        if self.is_encrypted:
+            try:
+                key = settings.ENCRYPTION_KEY.encode()
+                    
+                cipher = Fernet(key)
+                decrypted_content = cipher.decrypt(self.content.encode('utf-8'))
+                self.content = decrypted_content.decode('utf-8')
+                self.is_encrypted = False
+                return True
+            except Exception:
+                return False
+        return True  # Already decrypted
+
     def increment_view_count(self):
         self.view_count += 1
         self.save(update_fields=['view_count'])
@@ -46,12 +124,65 @@ class Snippet(models.Model):
     def is_expired(self):
         return timezone.now() > self.expires_at
 
+    def create_new_version(self, content, language=None):
+        """Create a new version of this snippet"""
+        # Get the highest version number among related versions
+        highest_version = Snippet.objects.filter(
+            models.Q(id=self.id) | models.Q(parent_snippet=self) | models.Q(parent_snippet=self.parent_snippet)
+        ).order_by('-version').values_list('version', flat=True).first() or 0
+        
+        # Create new version
+        new_snippet = Snippet(
+            content=content,
+            language=language or self.language,
+            parent_snippet=self.parent_snippet or self,  # Link to original parent or self if this is the original
+            version=highest_version + 1
+        )
+        new_snippet.save()
+        return new_snippet
+
+    def get_all_versions(self):
+        """Get all versions of this snippet in order"""
+        if self.parent_snippet:
+            # This is a child version, get all siblings including parent
+            return Snippet.objects.filter(
+                models.Q(id=self.parent_snippet.id) | 
+                models.Q(parent_snippet=self.parent_snippet)
+            ).order_by('version')
+        else:
+            # This is a parent, get all children
+            return Snippet.objects.filter(
+                models.Q(id=self.id) | 
+                models.Q(parent_snippet=self)
+            ).order_by('version')
+
+    @classmethod
+    def record_snippet_creation(cls):
+        # Use cache to reduce database hits
+        cache_key = f'snippet_metrics_{timezone.now().date()}'
+        
+        # Increment in cache first
+        current_count = cache.get(cache_key, 0) + 1
+        cache.set(cache_key, current_count, 3600)  # Cache for 1 hour
+        
+        # Batch update to reduce database writes
+        if current_count % 10 == 0:
+            with transaction.atomic():
+                today = timezone.now().date()
+                obj, created = SnippetMetrics.objects.get_or_create(date=today)
+                obj.total_snippets += current_count
+                obj.save(update_fields=['total_snippets'])
+                
+                # Reset cache after database update
+                cache.delete(cache_key)
+
 class SnippetView(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     snippet = models.ForeignKey(Snippet, on_delete=models.CASCADE, related_name='views')
     viewed_at = models.DateTimeField(auto_now_add=True)
     ip_hash = models.CharField(max_length=64)
     user_agent = models.CharField(max_length=255)
+    location = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = 'snippet_views'
@@ -70,42 +201,29 @@ class SnippetMetrics(models.Model):
 
     @classmethod
     def record_snippet_creation(cls):
-        # Use cache to reduce database hits
-        cache_key = f'snippet_metrics_{timezone.now().date()}'
-        
-        # Increment in cache first
-        current_count = cache.get(cache_key, 0) + 1
-        cache.set(cache_key, current_count, 3600)  # Cache for 1 hour
-        
-        # Batch update to reduce database writes
-        if current_count % 10 == 0:
-            with transaction.atomic():
-                today = timezone.now().date()
-                obj, created = cls.objects.get_or_create(date=today)
-                obj.total_snippets += current_count
-                obj.save(update_fields=['total_snippets'])
-                
-                # Reset cache after database update
-                cache.delete(cache_key)
+        today = timezone.now().date()
+        obj, created = cls.objects.get_or_create(date=today)
+        obj.total_snippets += 1
+        obj.save(update_fields=['total_snippets'])
 
     @classmethod
     def record_snippet_view(cls):
-        cache_key = f'snippet_view_metrics_{timezone.now().date()}'
-        
-        # Increment in cache
-        current_count = cache.get(cache_key, 0) + 1
-        cache.set(cache_key, current_count, 3600)  # Cache for 1 hour
-        
-        # Batch update every 10 views
-        if current_count % 10 == 0:
-            with transaction.atomic():
-                today = timezone.now().date()
-                obj, created = SnippetMetrics.objects.get_or_create(date=today)
-                obj.total_views += current_count
-                obj.save(update_fields=['total_views'])
-                
-                # Reset cache after database update
-                cache.delete(cache_key)
+        today = timezone.now().date()
+        obj, created = cls.objects.get_or_create(date=today)
+        obj.total_views += 1
+        obj.save(update_fields=['total_views'])
+
+
+class SnippetDiff(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_snippet = models.ForeignKey(Snippet, on_delete=models.CASCADE, related_name='source_diffs')
+    target_snippet = models.ForeignKey(Snippet, on_delete=models.CASCADE, related_name='target_diffs')
+    diff_content = models.TextField()  # Store the unified diff
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'snippet_diffs'
+        unique_together = ('source_snippet', 'target_snippet')
 
 
 class VSCodeExtensionMetrics(models.Model):
