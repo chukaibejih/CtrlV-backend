@@ -9,10 +9,16 @@ from django.db import models, transaction
 from django.shortcuts import get_object_or_404
 from .models import Snippet, SnippetMetrics, SnippetView, SnippetDiff, VSCodeExtensionMetrics, VSCodeTelemetryEvent
 from .serializers import (
-    SnippetSerializer, SnippetViewSerializer, SnippetDiffSerializer,
+    PublicSnippetSerializer, SnippetSerializer, SnippetViewSerializer, SnippetDiffSerializer,
     SnippetPasswordCheckSerializer, SnippetVersionSerializer
 )
+from rest_framework.pagination import PageNumberPagination
 
+class PublicFeedPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 50
+    
 class SnippetCreateView(APIView):
     def post(self, request):
         serializer = SnippetSerializer(data=request.data, context={'request': request})
@@ -40,10 +46,20 @@ class SnippetRetrieveView(APIView):
         verified = request.query_params.get('verified')
         
         try:
-            snippet = Snippet.objects.get(
-                id=snippet_id,
-                access_token=access_token
-            )
+            # Handle both regular and verified public snippets
+            if verified == 'true':
+                # For verified public snippets, check if it's public
+                snippet = Snippet.objects.get(
+                    id=snippet_id,
+                    access_token=access_token,
+                    is_public=True
+                )
+            else:
+                # Regular snippet access
+                snippet = Snippet.objects.get(
+                    id=snippet_id,
+                    access_token=access_token
+                )
         except Snippet.DoesNotExist:
             return Response(
                 {'error': 'Invalid snippet or access token'},
@@ -66,7 +82,7 @@ class SnippetRetrieveView(APIView):
         
         # If the snippet is password-protected, verify password first
         # Only require verification if verified=True is not in query params
-        if snippet.password_hash and not verified:
+        if snippet.password_hash and verified != 'true':
             return Response(
                 {'requires_password': True},
                 status=status.HTTP_403_FORBIDDEN
@@ -77,7 +93,7 @@ class SnippetRetrieveView(APIView):
         ip_hash = hashlib.sha256(ip_address.encode()).hexdigest()
         user_agent = request.META.get('HTTP_USER_AGENT', '')[:255]
         
-        # You could add IP geolocation here (using a service like MaxMind GeoIP)
+        # TODO You could add IP geolocation here (using a service like MaxMind GeoIP)
         # location = get_location_from_ip(ip_address)
         location = None
         
@@ -95,7 +111,7 @@ class SnippetRetrieveView(APIView):
         SnippetMetrics.record_snippet_view()
         
         # If the snippet is encrypted and verified, automatically decrypt it
-        if snippet.is_encrypted and verified:
+        if snippet.is_encrypted and verified == 'true':
             snippet.decrypt_content()
         
         # Check if this snippet has versions and fetch them
@@ -426,3 +442,109 @@ class VSCodeMetricsView(APIView):
         except Exception as e:
             # Log the error but don't propagate (telemetry errors shouldn't interrupt the user)
             print(f"Failed to store detailed telemetry: {e}")
+            
+
+class PublicFeedView(APIView):
+    """
+    Public feed endpoint for discovering public snippets
+    GET /api/v1/snippets/public/
+    """
+    pagination_class = PublicFeedPagination
+    
+    def get(self, request):
+        # Get active public snippets
+        queryset = Snippet.objects.filter(
+            is_public=True,
+            expires_at__gt=timezone.now()
+        ).exclude(
+            one_time_view=True,
+            is_consumed=True
+        ).select_related().order_by('-created_at')
+        
+        # Apply pagination
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request)
+        
+        if page is not None:
+            serializer = PublicSnippetSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+        
+        # Fallback without pagination
+        serializer = PublicSnippetSerializer(queryset[:20], many=True)
+        return Response(serializer.data)
+
+class PublicSnippetRetrieveView(APIView):
+    """
+    Retrieve a specific public snippet
+    GET /api/v1/snippets/public/{snippet_id}/
+    """
+    def get(self, request, snippet_id):
+        try:
+            snippet = Snippet.objects.get(
+                id=snippet_id,
+                is_public=True,
+                expires_at__gt=timezone.now()
+            )
+            if snippet.one_time_view and snippet.is_consumed:
+                return Response({
+                    'error': 'This one-time snippet has already been viewed',
+                    'error_code': 'SNIPPET_CONSUMED'
+                }, status=status.HTTP_404_NOT_FOUND)
+
+        except Snippet.DoesNotExist:
+            return Response(
+                {'error': 'Public snippet not found or has expired'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Check if password protected
+        if snippet.password_hash:
+            password = request.data.get('password') if request.method == 'POST' else None
+            
+            if not password:
+                return Response(
+                    {
+                        'requires_password': True,
+                        'protection_level': snippet.protection_level,
+                        'one_time_warning': snippet.one_time_view
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            if not snippet.check_password(password):
+                return Response(
+                    {'error': 'Invalid password'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        # Decrypt if needed
+        if snippet.is_encrypted:
+            snippet.decrypt_content()
+        
+        # Record the view
+        ip_address = request.META.get('REMOTE_ADDR', '')
+        ip_hash = hashlib.sha256(ip_address.encode()).hexdigest()
+        user_agent = request.META.get('HTTP_USER_AGENT', '')[:255]
+        
+        SnippetView.objects.create(
+            snippet=snippet,
+            ip_hash=ip_hash,
+            user_agent=user_agent
+        )
+        
+        # Increment view count
+        snippet.increment_view_count()
+        
+        # Update metrics
+        SnippetMetrics.record_snippet_view()
+        
+        # Handle one-time view
+        if snippet.one_time_view:
+            snippet.mark_as_consumed()
+        
+        serializer = SnippetSerializer(snippet)
+        return Response(serializer.data)
+    
+    def post(self, request, snippet_id):
+        """Handle password verification for protected public snippets"""
+        return self.get(request, snippet_id)
