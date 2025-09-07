@@ -10,10 +10,6 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RemoveField(
-            model_name="snippet",
-            name="encryption_salt",
-        ),
         migrations.AddField(
             model_name="snippet",
             name="is_public",
