@@ -113,6 +113,7 @@ class SnippetRetrieveView(APIView):
         # If the snippet is encrypted and verified, automatically decrypt it
         if snippet.is_encrypted and verified == 'true':
             snippet.decrypt_content()
+            
         
         # Check if this snippet has versions and fetch them
         versions = None
@@ -535,10 +536,10 @@ class PublicSnippetRetrieveView(APIView):
         # Increment view count
         snippet.increment_view_count()
         
-        # Update metrics
+        # # Update metrics
         SnippetMetrics.record_snippet_view()
         
-        # Handle one-time view
+        # # Handle one-time view 
         if snippet.one_time_view:
             snippet.mark_as_consumed()
         

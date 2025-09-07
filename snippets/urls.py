@@ -1,6 +1,8 @@
 from django.urls import path
 from .views import (
-    MonthlyStatsView, 
+    MonthlyStatsView,
+    PublicFeedView,
+    PublicSnippetRetrieveView, 
     SnippetCreateView, 
     SnippetRetrieveView, 
     SnippetStatsView, 
@@ -19,4 +21,6 @@ urlpatterns = [
     path('metrics/vscode/', VSCodeMetricsView.as_view(), name='vscode-metrics'),
     path('<uuid:snippet_id>/versions/', SnippetVersionView.as_view(), name='snippet-versions'),
     path('diff/<uuid:source_id>/<uuid:target_id>/', SnippetDiffView.as_view(), name='snippet-diff'),
+    path('public/', PublicFeedView.as_view(), name='public-feed'),
+    path('public/<uuid:snippet_id>/', PublicSnippetRetrieveView.as_view(), name='public-snippet-retrieve'),
 ]

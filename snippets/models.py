@@ -27,15 +27,20 @@ class Snippet(models.Model):
     # Versioning fields
     parent_snippet = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='versions')
     version = models.PositiveIntegerField(default=1)
+    is_consumed = models.BooleanField(default=False) 
+    consumed_at = models.DateTimeField(null=True, blank=True)
     # IP tracking
     creator_ip_hash = models.CharField(max_length=128, null=True, blank=True)
     creator_location = models.CharField(max_length=255, null=True, blank=True)
+    is_public = models.BooleanField(default=False)
+    public_name = models.CharField(max_length=100, null=True, blank=True)
 
     class Meta:
         db_table = 'snippets'
         indexes = [
             models.Index(fields=['access_token']),
             models.Index(fields=['expires_at']),
+            models.Index(fields=['is_public', 'expires_at', 'created_at']),
         ]
 
     def save(self, *args, **kwargs):
@@ -123,6 +128,51 @@ class Snippet(models.Model):
     @property
     def is_expired(self):
         return timezone.now() > self.expires_at
+    
+    @property
+    def is_available(self):
+        """Check if snippet is available for viewing"""
+        if self.is_expired:
+            return False
+        if self.one_time_view and self.is_consumed:
+            return False
+        return True
+    
+    def mark_as_consumed(self):
+        """Mark snippet as consumed for one-time view"""
+        if self.one_time_view:
+            self.is_consumed = True
+            self.consumed_at = timezone.now()
+            self.save(update_fields=['is_consumed', 'consumed_at'])
+    
+    @property
+    def protection_level(self):
+        """
+        Returns protection level for public feed display
+        Returns: 'none', 'password', or 'password_onetime'
+        """
+        if not self.password_hash:
+            return 'none'
+        elif self.one_time_view:
+            return 'password_onetime'
+        else:
+            return 'password'
+    
+    def clean(self):
+        """Custom validation for public snippets"""
+        from django.core.exceptions import ValidationError
+        
+        # If public and one_time_view, must have password
+        if self.is_public and self.one_time_view and not self.password_hash:
+            raise ValidationError(
+                "Public one-time view snippets must be password protected"
+            )
+        
+        # If public, must have public_name
+        if self.is_public and not self.public_name:
+            raise ValidationError(
+                "Public snippets must have a public name"
+            )
 
     def create_new_version(self, content, language=None):
         """Create a new version of this snippet"""

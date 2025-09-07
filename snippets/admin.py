@@ -62,18 +62,24 @@ class SnippetDiffInline(admin.TabularInline):
 @admin.register(Snippet)
 class SnippetAdmin(admin.ModelAdmin):
     list_display = ('id', 'language', 'created_at', 'expires_at', 'view_count', 
-                    'is_encrypted', 'one_time_view', 'has_password', 'version', 'parent_link')
-    list_filter = ('language', 'is_encrypted', 'one_time_view', 'created_at', 'version')
-    search_fields = ('id', 'content', 'language', 'creator_ip_hash')
+                    'is_encrypted', 'one_time_view', 'has_password', 'version', 
+                    'is_public', 'public_name', 'parent_link')
+    list_filter = ('language', 'is_encrypted', 'one_time_view', 'is_public', 'created_at', 'version')
+    search_fields = ('id', 'content', 'language', 'creator_ip_hash', 'public_name')
     readonly_fields = ('id', 'access_token', 'created_at', 'view_count', 'parent_snippet', 'version', 
-                      'content_preview', 'expires_in', 'sharing_url', 'creator_ip_hash', 'creator_location')
+                      'content_preview', 'expires_in', 'sharing_url', 'creator_ip_hash', 
+                      'creator_location', 'protection_level')
+    
     fieldsets = (
         ('Basic Information', {
-            'fields': ('id', 'language', 'content_preview', 'created_at')
+            'fields': ('id', 'language', 'content_preview', 'created_at')   
         }),
         ('Content', {
             'fields': ('content',),
             'classes': ('collapse',),
+        }),
+        ('Public Feed', {
+            'fields': ('is_public', 'public_name', 'protection_level')
         }),
         ('Security & Access', {
             'fields': ('access_token', 'is_encrypted', 'one_time_view', 'password_hash', 'password_salt')
