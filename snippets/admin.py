@@ -2,7 +2,17 @@ from django.contrib import admin
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.utils.timezone import now
-from .models import Snippet, SnippetMetrics, SnippetView, SnippetDiff, VSCodeExtensionMetrics, VSCodeTelemetryEvent
+from .models import (
+    Snippet,
+    SnippetMetrics,
+    SnippetView,
+    SnippetDiff,
+    VSCodeExtensionMetrics,
+    VSCodeTelemetryEvent,
+    SnippetComment,
+    SnippetReaction,
+    SecretScanLog,
+)
 
 class SnippetViewInline(admin.TabularInline):
     model = SnippetView
@@ -62,13 +72,14 @@ class SnippetDiffInline(admin.TabularInline):
 @admin.register(Snippet)
 class SnippetAdmin(admin.ModelAdmin):
     list_display = ('id', 'language', 'created_at', 'expires_at', 'view_count', 
-                    'is_encrypted', 'one_time_view', 'has_password', 'version', 
-                    'is_public', 'public_name', 'parent_link')
-    list_filter = ('language', 'is_encrypted', 'one_time_view', 'is_public', 'created_at', 'version')
+                    'is_encrypted', 'one_time_view', 'has_password', 'version',
+                    'is_public', 'public_name', 'max_views', 'allow_comments', 'parent_link')
+    list_filter = ('language', 'is_encrypted', 'one_time_view', 'is_public', 'created_at', 'version', 'allow_comments')
     search_fields = ('id', 'content', 'language', 'creator_ip_hash', 'public_name')
-    readonly_fields = ('id', 'access_token', 'created_at', 'view_count', 'parent_snippet', 'version', 
-                      'content_preview', 'expires_in', 'sharing_url', 'creator_ip_hash', 
-                      'creator_location', 'protection_level')
+    ordering = ('-created_at',)
+    readonly_fields = ('id', 'access_token', 'created_at', 'view_count', 'parent_snippet', 'version',
+                      'content_preview', 'expires_in', 'sharing_url', 'creator_ip_hash',
+                      'creator_location', 'protection_level', 'remaining_views_display')
     
     fieldsets = (
         ('Basic Information', {
@@ -82,7 +93,7 @@ class SnippetAdmin(admin.ModelAdmin):
             'fields': ('is_public', 'public_name', 'protection_level')
         }),
         ('Security & Access', {
-            'fields': ('access_token', 'is_encrypted', 'one_time_view', 'password_hash', 'password_salt')
+            'fields': ('access_token', 'is_encrypted', 'one_time_view', 'max_views', 'allow_comments', 'password_hash', 'password_salt', 'remaining_views_display')
         }),
         ('Expiration', {
             'fields': ('expires_at', 'expires_in')
@@ -129,6 +140,13 @@ class SnippetAdmin(admin.ModelAdmin):
         url = obj.get_sharing_url(base_url)
         return mark_safe('<a href="{0}" target="_blank">{0}</a>'.format(url))
     sharing_url.short_description = 'Sharing URL'
+
+    def remaining_views_display(self, obj):
+        rv = obj.remaining_views
+        if rv is None:
+            return "Unlimited"
+        return rv
+    remaining_views_display.short_description = 'Remaining Views'
     
     def parent_link(self, obj):
         if obj.parent_snippet:
@@ -251,3 +269,54 @@ class VSCodeExtensionMetricsAdmin(admin.ModelAdmin):
         link = f'<a href="{url}?timestamp__date={obj.date}">View detailed events</a>'
         return mark_safe(link)
     detail_link.short_description = 'Details'
+
+
+@admin.register(SnippetComment)
+class SnippetCommentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'snippet_link', 'display_name', 'created_at', 'ip_hash')
+    search_fields = ('content', 'display_name', 'ip_hash')
+    list_filter = ('created_at',)
+    readonly_fields = ('id', 'snippet', 'content', 'display_name', 'delete_token', 'created_at', 'ip_hash')
+    ordering = ('-created_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def snippet_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.snippet.id])
+        return mark_safe('<a href="{}">{}</a>'.format(url, obj.snippet.id))
+    snippet_link.short_description = 'Snippet'
+
+
+@admin.register(SnippetReaction)
+class SnippetReactionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'snippet_link', 'reaction_type', 'count', 'updated_at')
+    list_filter = ('reaction_type', 'updated_at')
+    search_fields = ('snippet__id', 'reaction_type')
+    readonly_fields = ('id', 'snippet', 'reaction_type', 'count', 'updated_at')
+    ordering = ('-updated_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def snippet_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.snippet.id])
+        return mark_safe('<a href="{}">{}</a>'.format(url, obj.snippet.id))
+    snippet_link.short_description = 'Snippet'
+
+
+@admin.register(SecretScanLog)
+class SecretScanLogAdmin(admin.ModelAdmin):
+    list_display = ('id', 'snippet_link', 'rule_type', 'severity', 'created_at')
+    list_filter = ('rule_type', 'severity', 'created_at')
+    search_fields = ('rule_type', 'severity', 'matched_fragment')
+    readonly_fields = ('id', 'snippet', 'rule_type', 'severity', 'matched_fragment', 'created_at')
+    ordering = ('-created_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def snippet_link(self, obj):
+        url = reverse('admin:snippets_snippet_change', args=[obj.snippet.id])
+        return mark_safe('<a href="{}">{}</a>'.format(url, obj.snippet.id))
+    snippet_link.short_description = 'Snippet'

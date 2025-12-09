@@ -1,6 +1,7 @@
 # models.py
 import uuid
 from django.db import models
+from django.db.models import F
 from django.utils import timezone
 from datetime import timedelta
 import secrets
@@ -34,6 +35,9 @@ class Snippet(models.Model):
     creator_location = models.CharField(max_length=255, null=True, blank=True)
     is_public = models.BooleanField(default=False)
     public_name = models.CharField(max_length=100, null=True, blank=True)
+    # Collaboration and access controls
+    max_views = models.PositiveIntegerField(null=True, blank=True)
+    allow_comments = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'snippets'
@@ -119,8 +123,10 @@ class Snippet(models.Model):
         return True  # Already decrypted
 
     def increment_view_count(self):
-        self.view_count += 1
-        self.save(update_fields=['view_count'])
+        """Atomically increment view count to avoid race conditions."""
+        Snippet.objects.filter(pk=self.pk).update(view_count=F('view_count') + 1)
+        # Refresh instance field for in-memory calculations
+        self.refresh_from_db(fields=['view_count'])
     
     def get_sharing_url(self, base_url):
         return f"{base_url}/s/{self.id}?token={self.access_token}"
@@ -136,11 +142,13 @@ class Snippet(models.Model):
             return False
         if self.one_time_view and self.is_consumed:
             return False
+        if self.max_views is not None and self.view_count >= self.max_views:
+            return False
         return True
     
     def mark_as_consumed(self):
         """Mark snippet as consumed for one-time view"""
-        if self.one_time_view:
+        if self.one_time_view or (self.max_views is not None and self.view_count >= self.max_views):
             self.is_consumed = True
             self.consumed_at = timezone.now()
             self.save(update_fields=['is_consumed', 'consumed_at'])
@@ -157,6 +165,14 @@ class Snippet(models.Model):
             return 'password_onetime'
         else:
             return 'password'
+
+    @property
+    def remaining_views(self):
+        """Return remaining views if capped, else None"""
+        if self.max_views is None:
+            return None
+        remaining = self.max_views - self.view_count
+        return max(remaining, 0)
     
     def clean(self):
         """Custom validation for public snippets"""
@@ -274,6 +290,51 @@ class SnippetDiff(models.Model):
     class Meta:
         db_table = 'snippet_diffs'
         unique_together = ('source_snippet', 'target_snippet')
+
+class SnippetComment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    snippet = models.ForeignKey(Snippet, on_delete=models.CASCADE, related_name='comments')
+    content = models.TextField()
+    display_name = models.CharField(max_length=100, null=True, blank=True)
+    delete_token = models.CharField(max_length=64, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    ip_hash = models.CharField(max_length=64, db_index=True)
+
+    class Meta:
+        db_table = 'snippet_comments'
+        indexes = [
+            models.Index(fields=['snippet', '-created_at']),
+            models.Index(fields=['ip_hash', 'created_at']),
+        ]
+
+class SnippetReaction(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    snippet = models.ForeignKey(Snippet, on_delete=models.CASCADE, related_name='reactions')
+    reaction_type = models.CharField(max_length=20)
+    count = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'snippet_reactions'
+        unique_together = ('snippet', 'reaction_type')
+        indexes = [
+            models.Index(fields=['snippet', 'reaction_type']),
+        ]
+
+class SecretScanLog(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    snippet = models.ForeignKey(Snippet, on_delete=models.CASCADE, related_name='scan_logs')
+    rule_type = models.CharField(max_length=50)
+    severity = models.CharField(max_length=20)
+    matched_fragment = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'secret_scan_logs'
+        indexes = [
+            models.Index(fields=['snippet', 'created_at']),
+            models.Index(fields=['rule_type', 'severity']),
+        ]
 
 
 class VSCodeExtensionMetrics(models.Model):
