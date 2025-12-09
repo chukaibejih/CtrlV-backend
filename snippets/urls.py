@@ -9,7 +9,11 @@ from .views import (
     TimeSeriesStatsView,
     SnippetVersionView,
     SnippetDiffView,
-    VSCodeMetricsView
+    VSCodeMetricsView,
+    SnippetCommentView,
+    SnippetCommentDeleteView,
+    SnippetReactionView,
+    SnippetDiffQueryView,
 )
 
 urlpatterns = [
@@ -21,6 +25,10 @@ urlpatterns = [
     path('metrics/vscode/', VSCodeMetricsView.as_view(), name='vscode-metrics'),
     path('<uuid:snippet_id>/versions/', SnippetVersionView.as_view(), name='snippet-versions'),
     path('diff/<uuid:source_id>/<uuid:target_id>/', SnippetDiffView.as_view(), name='snippet-diff'),
+    path('<uuid:snippet_id>/diff/', SnippetDiffQueryView.as_view(), name='snippet-diff-query'),
+    path('<uuid:snippet_id>/comments/', SnippetCommentView.as_view(), name='snippet-comments'),
+    path('<uuid:snippet_id>/comments/<uuid:comment_id>/', SnippetCommentDeleteView.as_view(), name='snippet-comment-delete'),
+    path('<uuid:snippet_id>/reactions/', SnippetReactionView.as_view(), name='snippet-reactions'),
     path('public/', PublicFeedView.as_view(), name='public-feed'),
     path('public/<uuid:snippet_id>/', PublicSnippetRetrieveView.as_view(), name='public-snippet-retrieve'),
 ]

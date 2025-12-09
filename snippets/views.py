@@ -1,18 +1,72 @@
 from datetime import timedelta
 import hashlib
 import difflib
+import re
+import secrets
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import models, transaction
 from django.shortcuts import get_object_or_404
-from .models import Snippet, SnippetMetrics, SnippetView, SnippetDiff, VSCodeExtensionMetrics, VSCodeTelemetryEvent
+from django.core.cache import cache
+from .models import (
+    Snippet, SnippetMetrics, SnippetView, SnippetDiff,
+    VSCodeExtensionMetrics, VSCodeTelemetryEvent,
+    SnippetComment, SnippetReaction, SecretScanLog
+)
 from .serializers import (
     PublicSnippetSerializer, SnippetSerializer, SnippetViewSerializer, SnippetDiffSerializer,
-    SnippetPasswordCheckSerializer, SnippetVersionSerializer
+    SnippetPasswordCheckSerializer, SnippetVersionSerializer,
+    SnippetCommentSerializer, ReactionRequestSerializer
 )
 from rest_framework.pagination import PageNumberPagination
+
+SECRET_SCAN_POLICY = {
+    "block": False,
+    "requires_confirm": True,
+}
+
+SECRET_SCAN_RULES = [
+    ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}"), "high"),
+    ("aws_secret", re.compile(r"(?i)aws(.{0,20})?(secret|access).{0,3}['\"][0-9a-zA-Z\/+]{40}"), "high"),
+    ("gh_pat", re.compile(r"ghp_[0-9A-Za-z]{36}"), "high"),
+    ("generic_token", re.compile(r"(api[_-]?key|token|secret)[\"'\\s:=]+[A-Za-z0-9\\-_]{16,}"), "medium"),
+]
+
+
+def scan_secrets(content: str):
+    """Return warnings for potential secrets."""
+    warnings = []
+    snippet_preview = content or ""
+    for rule_name, pattern, severity in SECRET_SCAN_RULES:
+        match = pattern.search(snippet_preview)
+        if match:
+            fragment = match.group(0)
+            warnings.append({
+                "type": rule_name,
+                "severity": severity,
+                "matched": fragment[:64],
+            })
+    return warnings
+
+
+def reaction_summary(snippet):
+    """Return reaction summary as {type: count}."""
+    summary = {r.reaction_type: r.count for r in SnippetReaction.objects.filter(snippet=snippet)}
+    return summary
+
+
+def rate_limit_exceeded(key: str, limit: int, window_seconds: int) -> bool:
+    """Simple per-key counter with TTL to limit abuse."""
+    current = cache.get(key)
+    if current is None:
+        cache.set(key, 1, window_seconds)
+        return False
+    if current >= limit:
+        return True
+    cache.incr(key)
+    return False
 
 class PublicFeedPagination(PageNumberPagination):
     page_size = 20
@@ -26,16 +80,45 @@ class SnippetCreateView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        # Secret scan before creation
+        content = serializer.validated_data.get('content', '')
+        warnings = scan_secrets(content)
+        if warnings:
+            if SECRET_SCAN_POLICY.get("block"):
+                return Response(
+                    {"error": "secret_scan_blocked", "warnings": warnings},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if SECRET_SCAN_POLICY.get("requires_confirm") and not request.data.get('confirm_scan'):
+                return Response(
+                    {"requires_confirm": True, "warnings": warnings},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         snippet = serializer.save()
         
         # Update metrics
         SnippetMetrics.record_snippet_creation()
         print(snippet.get_sharing_url(request.build_absolute_uri('/')[:-1]))
 
+        # Audit scan results if present
+        if warnings:
+            SecretScanLog.objects.bulk_create([
+                SecretScanLog(
+                    snippet=snippet,
+                    rule_type=warn["type"],
+                    severity=warn["severity"],
+                    matched_fragment=warn["matched"]
+                ) for warn in warnings
+            ])
+
         return Response({
             'id': snippet.id,
             'access_token': snippet.access_token,
-            'sharing_url': snippet.get_sharing_url(request.build_absolute_uri('/')[:-1])
+            'sharing_url': snippet.get_sharing_url(request.build_absolute_uri('/')[:-1]),
+            'warnings': warnings,
+            'remaining_views': snippet.remaining_views,
+            'scan_status': 'warned' if warnings else 'clean',
         }, status=status.HTTP_201_CREATED)
 
 
@@ -79,6 +162,13 @@ class SnippetRetrieveView(APIView):
                 {'error': 'This snippet has already been viewed'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        # Handle max view caps
+        if snippet.max_views is not None and snippet.view_count >= snippet.max_views:
+            return Response(
+                {'error': 'This snippet has reached its view limit'},
+                status=status.HTTP_404_NOT_FOUND
+            )
         
         # If the snippet is password-protected, verify password first
         # Only require verification if verified=True is not in query params
@@ -109,6 +199,10 @@ class SnippetRetrieveView(APIView):
 
         # Update metrics
         SnippetMetrics.record_snippet_view()
+
+        # Mark consumed if limits reached
+        if snippet.one_time_view or (snippet.max_views is not None and snippet.view_count >= snippet.max_views):
+            snippet.mark_as_consumed()
         
         # If the snippet is encrypted and verified, automatically decrypt it
         if snippet.is_encrypted and verified == 'true':
@@ -127,6 +221,8 @@ class SnippetRetrieveView(APIView):
         # Add versions information if available
         if versions:
             response_data['versions'] = versions
+        
+        response_data['scan_status'] = 'warned' if snippet.scan_logs.exists() else 'clean'
             
         return Response(response_data)
 
@@ -491,6 +587,11 @@ class PublicSnippetRetrieveView(APIView):
                     'error': 'This one-time snippet has already been viewed',
                     'error_code': 'SNIPPET_CONSUMED'
                 }, status=status.HTTP_404_NOT_FOUND)
+            if snippet.max_views is not None and snippet.view_count >= snippet.max_views:
+                return Response({
+                    'error': 'Snippet has reached its view limit',
+                    'error_code': 'SNIPPET_CONSUMED'
+                }, status=status.HTTP_404_NOT_FOUND)
 
         except Snippet.DoesNotExist:
             return Response(
@@ -540,7 +641,7 @@ class PublicSnippetRetrieveView(APIView):
         SnippetMetrics.record_snippet_view()
         
         # # Handle one-time view 
-        if snippet.one_time_view:
+        if snippet.one_time_view or (snippet.max_views is not None and snippet.view_count >= snippet.max_views):
             snippet.mark_as_consumed()
         
         serializer = SnippetSerializer(snippet)
@@ -549,3 +650,162 @@ class PublicSnippetRetrieveView(APIView):
     def post(self, request, snippet_id):
         """Handle password verification for protected public snippets"""
         return self.get(request, snippet_id)
+
+
+class SnippetCommentView(APIView):
+    """Create/list comments for a snippet (no auth, rate-limited)."""
+    def get(self, request, snippet_id):
+        snippet = get_object_or_404(Snippet, id=snippet_id)
+        if snippet.is_expired:
+            return Response({'error': 'Snippet has expired'}, status=status.HTTP_404_NOT_FOUND)
+        if not snippet.allow_comments:
+            return Response({'error': 'Comments disabled for this snippet'}, status=status.HTTP_403_FORBIDDEN)
+
+        comments_qs = SnippetComment.objects.filter(snippet=snippet).order_by('-created_at')[:200]
+        serialized = SnippetCommentSerializer(comments_qs, many=True).data
+        for item in serialized:
+            item.pop('delete_token', None)
+        return Response({
+            'comments': serialized,
+            'reactions': reaction_summary(snippet)
+        })
+
+    def post(self, request, snippet_id):
+        snippet = get_object_or_404(Snippet, id=snippet_id)
+        if snippet.is_expired:
+            return Response({'error': 'Snippet has expired'}, status=status.HTTP_404_NOT_FOUND)
+        if not snippet.allow_comments:
+            return Response({'error': 'Comments disabled for this snippet'}, status=status.HTTP_403_FORBIDDEN)
+
+        ip_address = request.META.get('REMOTE_ADDR', '')
+        ip_hash = hashlib.sha256(ip_address.encode()).hexdigest()
+
+        if rate_limit_exceeded(f"comment_rate:{ip_hash}", limit=5, window_seconds=60):
+            return Response({'error': 'Too many comments, slow down.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        serializer = SnippetCommentSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        delete_token = secrets.token_urlsafe(24)
+        comment = SnippetComment.objects.create(
+            snippet=snippet,
+            content=serializer.validated_data['content'],
+            display_name=serializer.validated_data.get('display_name') or None,
+            delete_token=delete_token,
+            ip_hash=ip_hash
+        )
+        return Response(SnippetCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
+
+
+class SnippetCommentDeleteView(APIView):
+    """Delete a comment using its delete token."""
+    def delete(self, request, snippet_id, comment_id):
+        comment = get_object_or_404(SnippetComment, id=comment_id, snippet_id=snippet_id)
+        token = request.data.get('delete_token') or request.query_params.get('delete_token')
+        if not token or token != comment.delete_token:
+            return Response({'error': 'Invalid delete token'}, status=status.HTTP_403_FORBIDDEN)
+        comment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SnippetReactionView(APIView):
+    """Add/list reactions for a snippet."""
+    def get(self, request, snippet_id):
+        snippet = get_object_or_404(Snippet, id=snippet_id)
+        if snippet.is_expired:
+            return Response({'error': 'Snippet has expired'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'reactions': reaction_summary(snippet)})
+
+    def post(self, request, snippet_id):
+        snippet = get_object_or_404(Snippet, id=snippet_id)
+        if snippet.is_expired:
+            return Response({'error': 'Snippet has expired'}, status=status.HTTP_404_NOT_FOUND)
+        ip_address = request.META.get('REMOTE_ADDR', '')
+        ip_hash = hashlib.sha256(ip_address.encode()).hexdigest()
+
+        if rate_limit_exceeded(f"reaction_rate:{ip_hash}", limit=10, window_seconds=60):
+            return Response({'error': 'Too many reactions, slow down.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        serializer = ReactionRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        reaction_type = serializer.validated_data['reaction_type']
+        reaction, created = SnippetReaction.objects.get_or_create(snippet=snippet, reaction_type=reaction_type, defaults={'count': 0})
+        if created:
+            reaction.count = 1
+            reaction.save(update_fields=['count'])
+        else:
+            SnippetReaction.objects.filter(id=reaction.id).update(count=models.F('count') + 1)
+            reaction.refresh_from_db(fields=['count'])
+
+        return Response({'reactions': reaction_summary(snippet)}, status=status.HTTP_201_CREATED)
+
+
+class SnippetDiffQueryView(APIView):
+    """Diff between versions using version numbers (latest vs prior by default)."""
+    def get(self, request, snippet_id):
+        snippet = get_object_or_404(Snippet, id=snippet_id)
+        versions_qs = snippet.get_all_versions()
+        if not versions_qs.exists():
+            return Response({'error': 'No versions found'}, status=status.HTTP_404_NOT_FOUND)
+
+        to_version_param = request.query_params.get('to')
+        from_version_param = request.query_params.get('from')
+
+        def pick_version(version_number, fallback):
+            if version_number is None:
+                return fallback
+            return versions_qs.filter(version=version_number).first()
+
+        latest = versions_qs.order_by('-version').first()
+        try:
+            target_version = pick_version(int(to_version_param) if to_version_param else None, latest)
+        except ValueError:
+            return Response({'error': 'Invalid to version'}, status=status.HTTP_400_BAD_REQUEST)
+        if not target_version:
+            return Response({'error': 'Target version not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        previous_version_number = target_version.version - 1
+        try:
+            source_version = pick_version(int(from_version_param) if from_version_param else previous_version_number, None)
+        except ValueError:
+            return Response({'error': 'Invalid from version'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not source_version:
+            return Response({'error': 'Source version not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        source_lines = source_version.content.splitlines()
+        target_lines = target_version.content.splitlines()
+        diff_generator = difflib.unified_diff(
+            source_lines,
+            target_lines,
+            fromfile=f'v{source_version.version}',
+            tofile=f'v{target_version.version}',
+            lineterm=''
+        )
+        diff_text = '\n'.join(diff_generator)
+
+        additions = sum(1 for line in diff_text.splitlines() if line.startswith('+') and not line.startswith('+++'))
+        deletions = sum(1 for line in diff_text.splitlines() if line.startswith('-') and not line.startswith('---'))
+
+        versions_meta = [
+            {
+                'id': str(v.id),
+                'version': v.version,
+                'created_at': v.created_at,
+                'size': len(v.content),
+                'lines': len(v.content.splitlines()),
+            }
+            for v in versions_qs
+        ]
+
+        return Response({
+            'from_version': source_version.version,
+            'to_version': target_version.version,
+            'diff': diff_text,
+            'additions': additions,
+            'deletions': deletions,
+            'versions': versions_meta,
+        })

@@ -27,6 +27,12 @@ class SnippetSerializer(serializers.ModelSerializer):
         write_only=True,
         help_text="Parent snippet ID for creating versions"
     )
+    max_views = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        allow_null=True,
+        help_text="Maximum allowed views before burn-after-read triggers"
+    )
     
     is_public = serializers.BooleanField(
         required=False,
@@ -40,6 +46,7 @@ class SnippetSerializer(serializers.ModelSerializer):
         help_text="Display name for public feed (required if is_public=True)"
     )
     protection_level = serializers.ReadOnlyField()
+    remaining_views = serializers.SerializerMethodField()
 
     class Meta:
         model = Snippet
@@ -47,9 +54,9 @@ class SnippetSerializer(serializers.ModelSerializer):
             'id', 'content', 'language', 'created_at', 'expires_at', 'expiration',
             'view_count', 'one_time_view', 'password', 'encrypt_content',
             'is_encrypted', 'parent_id', 'version', 'is_public', 'public_name',
-            'protection_level'
+            'protection_level', 'max_views', 'remaining_views', 'allow_comments'
         ]
-        read_only_fields = ['id', 'created_at', 'view_count', 'expires_at', 'version', 'is_encrypted', 'protection_level']
+        read_only_fields = ['id', 'created_at', 'view_count', 'expires_at', 'version', 'is_encrypted', 'protection_level', 'remaining_views']
 
     def validate(self, attrs):
         # If password is provided, automatically set encrypt_content to True
@@ -66,6 +73,8 @@ class SnippetSerializer(serializers.ModelSerializer):
         public_name = attrs.get('public_name', '').strip()
         one_time_view = attrs.get('one_time_view', False)
         password = attrs.get('password', '').strip()
+        max_views = attrs.get('max_views')
+        expiration_input = attrs.get('expiration', '24h')
         
         # Public snippets must have a name
         if is_public and not public_name:
@@ -78,6 +87,16 @@ class SnippetSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'password': 'Public one-time view snippets must be password protected.'
             })
+
+        # Cap view limits for safety
+        if max_views is not None:
+            if max_views < 1:
+                raise serializers.ValidationError({'max_views': 'Max views must be at least 1.'})
+            if max_views > 1000:
+                raise serializers.ValidationError({'max_views': 'Max views capped at 1000 to prevent abuse.'})
+
+        # Normalize expiration now so errors surface during validation
+        attrs['expires_at'] = self._calculate_expiration(expiration_input)
             
         return attrs
 
@@ -103,8 +122,9 @@ class SnippetSerializer(serializers.ModelSerializer):
         encrypt_content = validated_data.pop('encrypt_content', False)
         parent_id = validated_data.pop('parent_id', None)
         expiration = validated_data.pop('expiration', '24h')
+        max_views = validated_data.get('max_views')
         
-        validated_data['expires_at'] = self._calculate_expiration(expiration)
+        # expires_at already set in validate
         
         # Get creator IP information if available
         request = self.context.get('request')
@@ -124,7 +144,9 @@ class SnippetSerializer(serializers.ModelSerializer):
                     one_time_view=validated_data.get('one_time_view', False),
                     is_public=validated_data.get('is_public', False),
                     public_name=validated_data.get('public_name'),
-                    parent_snippet=parent_snippet
+                    parent_snippet=parent_snippet,
+                    max_views=max_views,
+                    allow_comments=validated_data.get('allow_comments', True),
                 )
                 # Add IP info
                 if 'creator_ip_hash' in validated_data:
@@ -163,17 +185,37 @@ class SnippetSerializer(serializers.ModelSerializer):
         
         now = timezone.now()
         
-        if expiration_str == '1h':
-            return now + timedelta(hours=1)
-        elif expiration_str == '24h':
-            return now + timedelta(hours=24)
-        elif expiration_str == '7d':
-            return now + timedelta(days=7)
-        elif expiration_str == '30d':
-            return now + timedelta(days=30)
-        else:
-            # Default to 24 hours for invalid values
-            return now + timedelta(hours=24)
+        presets = {
+            '10m': now + timedelta(minutes=10),
+            '1h': now + timedelta(hours=1),
+            '24h': now + timedelta(hours=24),
+            '48h': now + timedelta(hours=48),
+            '7d': now + timedelta(days=7),
+            '30d': now + timedelta(days=30),
+        }
+
+        if expiration_str in presets:
+            return presets[expiration_str]
+
+        if isinstance(expiration_str, str):
+            # Try ISO 8601 timestamp
+            try:
+                parsed = timezone.datetime.fromisoformat(expiration_str.replace('Z', '+00:00'))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                if parsed <= now:
+                    raise serializers.ValidationError('Expiration must be in the future.')
+                # Cap at 90 days to avoid unbounded retention
+                if parsed > now + timedelta(days=90):
+                    raise serializers.ValidationError('Expiration cannot exceed 90 days.')
+                return parsed
+            except ValueError:
+                pass
+
+        raise serializers.ValidationError('Invalid expiration format. Use 10m,1h,24h,48h,7d,30d or ISO-8601 timestamp.')
+
+    def get_remaining_views(self, obj):
+        return obj.remaining_views
 
 
 class PublicSnippetSerializer(serializers.ModelSerializer):
@@ -212,3 +254,28 @@ class SnippetVersionSerializer(serializers.ModelSerializer):
         model = Snippet
         fields = ['id', 'version', 'created_at', 'language']
         read_only_fields = ['id', 'version', 'created_at', 'language']
+
+
+class SnippetCommentSerializer(serializers.Serializer):
+    id = serializers.UUIDField(read_only=True)
+    content = serializers.CharField()
+    display_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    created_at = serializers.DateTimeField(read_only=True)
+    delete_token = serializers.CharField(read_only=True)
+
+    def validate_content(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Content cannot be empty.")
+        if len(value) > 2000:
+            raise serializers.ValidationError("Content too long (max 2000 characters).")
+        return value
+
+
+class ReactionRequestSerializer(serializers.Serializer):
+    reaction_type = serializers.CharField()
+
+    def validate_reaction_type(self, value):
+        allowed = {'like', 'insight', 'question'}
+        if value not in allowed:
+            raise serializers.ValidationError(f"Reaction type must be one of {', '.join(sorted(allowed))}.")
+        return value
