@@ -136,7 +136,7 @@ class SnippetAdmin(admin.ModelAdmin):
     expires_in.short_description = 'Expires In'
     
     def sharing_url(self, obj):
-        base_url = "https://ctrlv.codes"  # Replace with your actual base URL
+        base_url = "https://api.ctrlvapp.com"
         url = obj.get_sharing_url(base_url)
         return mark_safe('<a href="{0}" target="_blank">{0}</a>'.format(url))
     sharing_url.short_description = 'Sharing URL'

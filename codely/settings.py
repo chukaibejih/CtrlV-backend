@@ -32,9 +32,24 @@ SECRET_KEY = config("SECRET_KEY", default=get_random_secret_key(), cast=str)
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = int(config("DEBUG", default=False))
 
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=Csv())
+MANDATORY_ALLOWED_HOSTS = [
+    "api.ctrlvapp.com",
+    "backend.ctrlv.codes",  # Temporary during migration
+]
+EXTRA_ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=Csv())
+ALLOWED_HOSTS = list(dict.fromkeys([*MANDATORY_ALLOWED_HOSTS, *EXTRA_ALLOWED_HOSTS]))
 
-CORS_ORIGIN_ALLOW_ALL = True
+CORS_ORIGIN_ALLOW_ALL = False
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys([
+    "https://ctrlvapp.com",
+    "https://www.ctrlvapp.com",
+    *config("CORS_ALLOWED_ORIGINS", default="", cast=Csv()),
+]))
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+    "https://ctrlvapp.com",
+    "https://www.ctrlvapp.com",
+    *config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv()),
+]))
 
 ENVIRONMENT = config("DJANGO_ENV", "development")
 

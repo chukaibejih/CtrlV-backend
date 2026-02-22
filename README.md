@@ -40,7 +40,9 @@ Create a `.env` file in the root directory and set the required environment vari
 SECRET_KEY=your_secret_key
 DEBUG=True  # Set to False in production
 DATABASE_URL=postgres://your_db_url
-ALLOWED_HOSTS=*
+ALLOWED_HOSTS=api.ctrlvapp.com,backend.ctrlv.codes
+CORS_ALLOWED_ORIGINS=https://ctrlvapp.com,https://www.ctrlvapp.com
+CSRF_TRUSTED_ORIGINS=https://ctrlvapp.com,https://www.ctrlvapp.com
 ```
 
 ### 4. Apply Migrations
@@ -58,6 +60,8 @@ poetry run python manage.py collectstatic --no-input
 poetry run python manage.py runserver
 ```
 Access the API at: `http://127.0.0.1:8000/`
+
+Production API domain: `https://api.ctrlvapp.com/`
 
 ---
 
@@ -82,4 +86,3 @@ Then, configure your **Render settings**:
 MIT License. See `LICENSE` for details.
 
 ---
-
