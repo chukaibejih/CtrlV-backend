@@ -194,3 +194,6 @@ dump.rdb
 
 CustomScripts/*
 # vfd_acct_trans.ipynb
+
+# Nested frontend repository
+CtrlV-frontend/
