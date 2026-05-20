@@ -41,11 +41,15 @@ ALLOWED_HOSTS = list(dict.fromkeys([*MANDATORY_ALLOWED_HOSTS, *EXTRA_ALLOWED_HOS
 
 CORS_ORIGIN_ALLOW_ALL = False
 CORS_ALLOWED_ORIGINS = list(dict.fromkeys([
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "https://ctrlvapp.com",
     "https://www.ctrlvapp.com",
     *config("CORS_ALLOWED_ORIGINS", default="", cast=Csv()),
 ]))
 CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "https://ctrlvapp.com",
     "https://www.ctrlvapp.com",
     *config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv()),

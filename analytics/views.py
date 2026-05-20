@@ -26,7 +26,9 @@ class AnalyticsDashboardView(APIView):
         
         # Overview metrics
         total_snippets = Snippet.objects.count()
-        active_snippets = Snippet.objects.filter(expires_at__gt=now).count()
+        active_snippets = Snippet.objects.filter(
+            Q(expires_at__isnull=True) | Q(expires_at__gt=now)
+        ).count()
         total_views = SnippetView.objects.count()
         
         # Today's metrics
@@ -133,6 +135,7 @@ class SnippetAnalyticsView(APIView):
         
         # Snippet lifetime analysis
         expired_snippets = Snippet.objects.filter(
+            expires_at__isnull=False,
             expires_at__lt=timezone.now(),
             created_at__date__gte=start_date
         ).count()
@@ -569,7 +572,10 @@ class PerformanceAnalyticsView(APIView):
         # Expiration patterns using proper Extract import
         expiration_analysis = (
             Snippet.objects
-            .filter(created_at__date__gte=start_date)
+            .filter(
+                created_at__date__gte=start_date,
+                expires_at__isnull=False
+            )
             .annotate(
                 lifetime_seconds=Extract(
                     F('expires_at') - F('created_at'), 'epoch'
@@ -578,6 +584,7 @@ class PerformanceAnalyticsView(APIView):
             .aggregate(
                 avg_lifetime_seconds=Avg('lifetime_seconds'),
                 expired_before_view=Count('id', filter=Q(
+                    expires_at__isnull=False,
                     expires_at__lt=timezone.now(),
                     view_count=0
                 ))
@@ -680,7 +687,7 @@ class RealTimeMetricsView(APIView):
         # System health indicators
         health_metrics = {
             'total_active_snippets': Snippet.objects.filter(
-                expires_at__gt=now
+                Q(expires_at__isnull=True) | Q(expires_at__gt=now)
             ).count(),
             'error_rate_last_hour': 0,  # Calculate from VS Code errors
             'avg_response_time': 'N/A',  # Would require request logging

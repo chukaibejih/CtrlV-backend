@@ -120,6 +120,8 @@ class SnippetAdmin(admin.ModelAdmin):
     content_preview.short_description = 'Content Preview'
     
     def expires_in(self, obj):
+        if obj.expires_at is None:
+            return "Never"
         if obj.expires_at <= now():
             return "Expired"
         delta = obj.expires_at - now()

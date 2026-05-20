@@ -17,7 +17,7 @@ class Snippet(models.Model):
     content = models.TextField()
     language = models.CharField(max_length=50)
     created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
+    expires_at = models.DateTimeField(null=True, blank=True)
     view_count = models.IntegerField(default=0)
     access_token = models.CharField(max_length=100, unique=True)
     is_encrypted = models.BooleanField(default=False)
@@ -48,7 +48,7 @@ class Snippet(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        if not self.expires_at:
+        if self.expires_at is None and not getattr(self, "_skip_expiration_default", False):
             # Default expiration time is 24 hours
             self.expires_at = timezone.now() + timedelta(hours=24)
         if not self.access_token:
@@ -133,6 +133,8 @@ class Snippet(models.Model):
 
     @property
     def is_expired(self):
+        if self.expires_at is None:
+            return False
         return timezone.now() > self.expires_at
     
     @property

@@ -14,7 +14,7 @@ class SnippetSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False,
         default="24h",
-        help_text="Expiration time: 1h, 24h, 7d, 30d"
+        help_text="Expiration time: 10m, 1h, 24h, 48h, 7d, 30d, never, or ISO-8601 timestamp"
     )
     encrypt_content = serializers.BooleanField(
         write_only=True,
@@ -147,7 +147,10 @@ class SnippetSerializer(serializers.ModelSerializer):
                     parent_snippet=parent_snippet,
                     max_views=max_views,
                     allow_comments=validated_data.get('allow_comments', True),
+                    expires_at=validated_data.get('expires_at'),
                 )
+                if snippet.expires_at is None:
+                    snippet._skip_expiration_default = True
                 # Add IP info
                 if 'creator_ip_hash' in validated_data:
                     snippet.creator_ip_hash = validated_data['creator_ip_hash']
@@ -162,10 +165,16 @@ class SnippetSerializer(serializers.ModelSerializer):
                 snippet.save()
             except Snippet.DoesNotExist:
                 # If parent doesn't exist, create a new snippet
-                snippet = Snippet.objects.create(**validated_data)
+                snippet = Snippet(**validated_data)
+                if snippet.expires_at is None:
+                    snippet._skip_expiration_default = True
+                snippet.save()
         else:
             # Create a new snippet
-            snippet = Snippet.objects.create(**validated_data)
+            snippet = Snippet(**validated_data)
+            if snippet.expires_at is None:
+                snippet._skip_expiration_default = True
+            snippet.save()
         
         # Process password and encryption
         if password:
@@ -184,6 +193,10 @@ class SnippetSerializer(serializers.ModelSerializer):
         from datetime import timedelta
         
         now = timezone.now()
+        if isinstance(expiration_str, str):
+            normalized = expiration_str.strip().lower()
+            if normalized in {'never', 'no-expire', 'no_expire', 'none', 'forever'}:
+                return None
         
         presets = {
             '10m': now + timedelta(minutes=10),
@@ -212,7 +225,7 @@ class SnippetSerializer(serializers.ModelSerializer):
             except ValueError:
                 pass
 
-        raise serializers.ValidationError('Invalid expiration format. Use 10m,1h,24h,48h,7d,30d or ISO-8601 timestamp.')
+        raise serializers.ValidationError('Invalid expiration format. Use 10m,1h,24h,48h,7d,30d, never, or ISO-8601 timestamp.')
 
     def get_remaining_views(self, obj):
         return obj.remaining_views

@@ -123,6 +123,19 @@ class SnippetCreateView(APIView):
 
 
 class SnippetRetrieveView(APIView):
+    def _get_snippet_for_token(self, request, snippet_id):
+        access_token = request.query_params.get('token')
+        if not access_token:
+            return None
+
+        try:
+            return Snippet.objects.get(
+                id=snippet_id,
+                access_token=access_token
+            )
+        except Snippet.DoesNotExist:
+            return None
+
     def get(self, request, snippet_id):
         # Create a cache key for this specific snippet
         access_token = request.query_params.get('token')
@@ -226,6 +239,65 @@ class SnippetRetrieveView(APIView):
             
         return Response(response_data)
 
+    def patch(self, request, snippet_id):
+        snippet = self._get_snippet_for_token(request, snippet_id)
+        if snippet is None:
+            return Response(
+                {'error': 'Invalid snippet or access token'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if snippet.is_expired:
+            return Response(
+                {'error': 'Snippet has expired'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        password = request.data.get('password', '')
+        if snippet.password_hash and not snippet.check_password(password):
+            return Response(
+                {'error': 'Invalid password'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        content = request.data.get('content')
+        language = request.data.get('language')
+
+        if content is not None:
+            if not str(content).strip():
+                return Response(
+                    {'content': 'Content cannot be empty'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            snippet.content = content
+
+        if language is not None:
+            serializer = SnippetSerializer()
+            try:
+                serializer.validate_language(language)
+            except Exception as exc:
+                return Response(
+                    {'language': str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            snippet.language = language
+
+        was_encrypted = snippet.is_encrypted
+        if was_encrypted and content is not None:
+            snippet.is_encrypted = False
+            snippet.encrypt_content()
+
+        snippet.save()
+
+        response_snippet = snippet
+        if was_encrypted and content is not None:
+            response_snippet.content = content
+            response_snippet.is_encrypted = False
+
+        response_data = SnippetSerializer(response_snippet).data
+        response_data['scan_status'] = 'warned' if snippet.scan_logs.exists() else 'clean'
+        return Response(response_data)
+
     # To handle password verification
     def post(self, request, snippet_id):
         action = request.data.get('action')
@@ -246,8 +318,9 @@ class SnippetRetrieveView(APIView):
                 )
                 
             if snippet.check_password(password):
-                # If the snippet is encrypted, decrypt it right now with the password
-                if snippet.is_encrypted:
+                # If the snippet is encrypted, decrypt it right now with the password.
+                was_encrypted = snippet.is_encrypted
+                if was_encrypted:
                     success = snippet.decrypt_content()
                     if not success:
                         return Response(
@@ -256,7 +329,7 @@ class SnippetRetrieveView(APIView):
                         )
                 
                 # Return decrypted content if it was encrypted
-                if snippet.is_encrypted:
+                if was_encrypted:
                     serializer = SnippetSerializer(snippet)
                     return Response({
                         'verified': True,
@@ -315,12 +388,12 @@ class SnippetStatsView(APIView):
     def get(self, request):
         total_snippets = Snippet.objects.count()
         active_snippets = Snippet.objects.filter(
-            expires_at__gt=timezone.now()
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
         ).count()
         
         language_stats = (
             Snippet.objects
-            .filter(expires_at__gt=timezone.now())
+            .filter(models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now()))
             .values('language')
             .annotate(count=models.Count('id'))
         )
@@ -551,8 +624,9 @@ class PublicFeedView(APIView):
     def get(self, request):
         # Get active public snippets
         queryset = Snippet.objects.filter(
-            is_public=True,
-            expires_at__gt=timezone.now()
+            is_public=True
+        ).filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
         ).exclude(
             one_time_view=True,
             is_consumed=True
@@ -579,9 +653,13 @@ class PublicSnippetRetrieveView(APIView):
         try:
             snippet = Snippet.objects.get(
                 id=snippet_id,
-                is_public=True,
-                expires_at__gt=timezone.now()
+                is_public=True
             )
+            if snippet.is_expired:
+                return Response(
+                    {'error': 'Public snippet not found or has expired'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
             if snippet.one_time_view and snippet.is_consumed:
                 return Response({
                     'error': 'This one-time snippet has already been viewed',

@@ -67,6 +67,8 @@ def select_weighted_snippet(snippets, language_weights):
 
 def generate_view_timestamp(created_at, expires_at, hour_weights):
     """Generate a realistic timestamp between creation and expiration"""
+    if expires_at is None:
+        return None
     # Ensure we're working with timezone-aware datetimes
     if timezone.is_naive(created_at):
         created_at = timezone.make_aware(created_at)

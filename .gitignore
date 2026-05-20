@@ -131,6 +131,7 @@ dmypy.json
 
 # migrations/
 .idea/
+.vscode/settings.json
 
 # Junk files
 junk_data.txt
@@ -194,3 +195,6 @@ dump.rdb
 
 CustomScripts/*
 # vfd_acct_trans.ipynb
+
+# Nested frontend repository
+CtrlV-frontend/
